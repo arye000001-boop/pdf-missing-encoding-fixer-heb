@@ -4,6 +4,7 @@ import {
   anchorAlpha,
   classifyFontRegime,
   decodeGid,
+  normalizeFontName,
   type FontGlyphStats,
   solveAlphaFromVotes,
 } from './tag-decode';
@@ -1131,16 +1132,20 @@ export function buildTagFontDecoders(
     const sub = o.get('Subtype');
     if (!sub || !sub.isName() || !SIMPLE_FONT_SUBTYPES.has(sub.asName())) continue;
     const bf = o.get('BaseFont');
+    // PDF dictionaries keep the six-letter subset prefix (e.g. ABCDEF+Font),
+    // while MuPDF's showGlyph/font.getName() reports the underlying name.
+    // All scan maps are keyed by the runtime name, so normalize before joining.
     const name = bf && bf.isName() ? bf.asName() : '';
-    if (!stats.has(name)) continue;
+    const fontKey = normalizeFontName(name);
+    if (!stats.has(fontKey)) continue;
 
     const toUnicode = o.get('ToUnicode');
     const hasToUnicode = !!toUnicode && !toUnicode.isNull();
     const isKnownLegacyHebrewFont =
-      /Adv(?:frank|vilna|hadasa|miryam|narkis)/i.test(name);
+      /Adv(?:frank|vilna|hadasa|miryam|narkis)/i.test(fontKey);
     if (!hasToUnicode && isKnownLegacyHebrewFont) {
       // Default to unresolved; clear this only after a verified calibration.
-      legacyUnresolved.add(name);
+      legacyUnresolved.add(fontKey);
       const probe = probeFontGlyphs(doc, i);
       if (probe.length === 256) {
         const realGids = probe.map((g) => g.gid).filter((gid) => gid > 0);
@@ -1152,9 +1157,9 @@ export function buildTagFontDecoders(
         // Use a family-specific window only when all 27 glyph IDs are
         // present in the probe; otherwise leave the font untouched.
         const knownAlpha: number | undefined =
-          /Advfrank-n$/i.test(name) ? 27 :
-          /Advfrank-b$/i.test(name) ? 14 :
-          /Advhadasa_b$/i.test(name) ? 15 :
+          /Advfrank-n$/i.test(fontKey) ? 27 :
+          /Advfrank-b$/i.test(fontKey) ? 14 :
+          /Advhadasa_b$/i.test(fontKey) ? 15 :
           undefined;
         if (
           knownAlpha !== undefined &&
@@ -1162,8 +1167,8 @@ export function buildTagFontDecoders(
             distinctGids.has(gid),
           )
         ) {
-          legacyLost.set(name, { alpha: knownAlpha, confident: true });
-          legacyUnresolved.delete(name);
+          legacyLost.set(fontKey, { alpha: knownAlpha, confident: true });
+          legacyUnresolved.delete(fontKey);
         } else if (
           knownAlpha === undefined &&
           distinctGids.size >= 27 &&
@@ -1173,15 +1178,15 @@ export function buildTagFontDecoders(
           // offset. solveAlphaFromVotes otherwise falls back to maxGid-26,
           // which is known to be unsafe for CFF fonts with trailing glyphs.
           const anchored = solveAlphaFromVotes(
-            votes.get(name) ?? new Map(),
+            votes.get(fontKey) ?? new Map(),
             probeMaxGid,
           );
           if (anchored.confident) {
-            legacyLost.set(name, anchored);
-            legacyUnresolved.delete(name);
+            legacyLost.set(fontKey, anchored);
+            legacyUnresolved.delete(fontKey);
           }
         } else {
-          legacyUnresolved.add(name);
+          legacyUnresolved.add(fontKey);
         }
       }
     }
@@ -1190,10 +1195,10 @@ export function buildTagFontDecoders(
     if (codeMap.size < 3) continue;
     const glyphs = probeFontGlyphs(doc, i);
     if (glyphs.length !== 256) continue;
-    let glyphMap = namedGlyphs.get(name);
+    let glyphMap = namedGlyphs.get(fontKey);
     if (!glyphMap) {
       glyphMap = new Map();
-      namedGlyphs.set(name, glyphMap);
+      namedGlyphs.set(fontKey, glyphMap);
     }
     for (const [code, ch] of codeMap) {
       const gid = glyphs[code]?.gid ?? 0;
