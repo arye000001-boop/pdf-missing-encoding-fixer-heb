@@ -25,6 +25,32 @@ export function normalizeFontName(name: string): string {
 }
 
 /**
+ * Hebrew legacy fonts are laid out in visual order. Their parenthesis glyphs
+ * therefore need mirrored Unicode destinations for logical RTL extraction.
+ * Keep this narrowly scoped to the verified Adv Hebrew font families.
+ */
+export function fixHebrewBracketMappings(
+  fontName: string,
+  mappings: Map<number, string>,
+  baseEncoding?: string,
+): void {
+  const key = normalizeFontName(fontName);
+  if (!/^Adv(?:frank|vilna|viloldii|hadasa|miryam|narkis)/i.test(key)) return;
+
+  for (const [code, value] of mappings) {
+    if (value === '(') mappings.set(code, ')');
+    else if (value === ')') mappings.set(code, '(');
+  }
+
+  // AdvFrank subsets use WinAnsiEncoding; the legacy PDF may omit these
+  // ordinary punctuation entries from ToUnicode altogether.
+  if (baseEncoding === 'WinAnsiEncoding') {
+    if (!mappings.has(0x28)) mappings.set(0x28, ')');
+    if (!mappings.has(0x29)) mappings.set(0x29, '(');
+  }
+}
+
+/**
  * Verified GID bases for legacy Adv subsets whose Hebrew alphabet occupies
  * a fixed contiguous glyph window. These are only used after the PDF probe
  * confirms every GID in the 27-slot window is present.
