@@ -82,9 +82,6 @@ export function fixPdfEncoding(
       // Do not replace an existing ToUnicode map until we can safely parse
       // and merge every variable-length bfchar/bfrange form. A partial Hebrew
       // map would otherwise erase punctuation, Latin text, and symbols.
-      const existingToUnicode = o.get('ToUnicode');
-      if (existingToUnicode && !existingToUnicode.isNull()) continue;
-
       const alpha = alphaByName.get(name);
       if (alpha === undefined) continue;
       try {
@@ -153,7 +150,17 @@ export function fixPdfEncoding(
       continue;
     }
     if (target.kind === 'type0') {
-      const cmap = buildVariableToUnicodeCMap(target.table);
+      const font = doc.newIndirect(target.objNum).resolve();
+      let merged: Map<string, string>;
+      try {
+        merged = readExistingVariableToUnicode(font);
+      } catch {
+        // Keep the original stream intact if it contains operators or formats
+        // that this bounded merger cannot preserve exactly.
+        continue;
+      }
+      for (const [code, letter] of target.table) merged.set(code, letter);
+      const cmap = buildVariableToUnicodeCMap(merged);
       const stream = doc.addStream(cmap, doc.newDictionary());
       doc.newIndirect(target.objNum).put('ToUnicode', stream);
       if (!fixedFonts.includes(target.name)) fixedFonts.push(target.name);
@@ -291,6 +298,60 @@ function readExistingSimpleToUnicode(font: mupdf.PDFObject): Map<number, string>
       if (last < first || last - first > 255 || !Number.isFinite(dest)) throw new Error('Unsafe ToUnicode bfrange');
       for (let code = first; code <= last; code++) {
         result.set(code, String.fromCharCode(dest + code - first));
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Read existing variable-length ToUnicode bfchar and scalar bfrange mappings.
+ * Array-form bfrange, malformed UTF-16, and unsupported operators are rejected
+ * so the caller can leave the original map untouched instead of losing data.
+ */
+function readExistingVariableToUnicode(font: mupdf.PDFObject): Map<string, string> {
+  const result = new Map<string, string>();
+  const obj = font.get('ToUnicode');
+  if (!obj || obj.isNull()) return result;
+  if (!obj.isStream()) throw new Error('Unsupported existing ToUnicode object');
+  const source = new TextDecoder('latin1').decode(obj.readStream().asUint8Array());
+  if (/beginbfrange[\\s\\S]*?\\[[\\s\\S]*?\\]/.test(source)) {
+    throw new Error('Array-form ToUnicode bfrange is not supported');
+  }
+  const hex = (value: string) => value.replace(/\\s+/g, '');
+  const decode = (value: string) => {
+    const h = hex(value);
+    if (!h || h.length % 4 !== 0 || !/^(?:[0-9a-f]{4})+$/i.test(h)) {
+      throw new Error('Invalid UTF-16 ToUnicode destination');
+    }
+    let out = '';
+    for (let i = 0; i < h.length; i += 4) out += String.fromCharCode(parseInt(h.slice(i, i + 4), 16));
+    return out;
+  };
+  const add = (src: string, dst: string) => {
+    const keyHex = hex(src);
+    if (!/^(?:[0-9a-f]{2}){1,4}$/i.test(keyHex)) throw new Error('Invalid ToUnicode source code');
+    result.set(encodingCodeKey(parseInt(keyHex, 16), keyHex.length / 2), decode(dst));
+  };
+  for (const block of source.matchAll(/\\d+\\s+beginbfchar([\\s\\S]*?)endbfchar/g)) {
+    const pairs = [...block[1].matchAll(/(<[0-9A-Fa-f\\s]+>)\\s*(<[0-9A-Fa-f\\s]+>)/g)];
+    for (const pair of pairs) add(pair[1].slice(1, -1), pair[2].slice(1, -1));
+  }
+  for (const block of source.matchAll(/\\d+\\s+beginbfrange([\\s\\S]*?)endbfrange/g)) {
+    const entries = [...block[1].matchAll(/(<[0-9A-Fa-f\\s]+>)\\s*(<[0-9A-Fa-f\\s]+>)\\s*(<[0-9A-Fa-f\\s]+>)/g)];
+    for (const entry of entries) {
+      const a = hex(entry[1].slice(1, -1)), b = hex(entry[2].slice(1, -1));
+      const dst = hex(entry[3].slice(1, -1));
+      if (!/^(?:[0-9a-f]{2}){1,4}$/i.test(a) || a.length !== b.length ||
+          !/^(?:[0-9a-f]{4})+$/i.test(dst)) throw new Error('Malformed ToUnicode bfrange');
+      const first = parseInt(a, 16), last = parseInt(b, 16);
+      if (last < first || last - first > 65535) throw new Error('Unsafe ToUnicode bfrange');
+      const dstValue = parseInt(dst, 16);
+      for (let code = first; code <= last; code++) {
+        const sourceCode = code.toString(16).padStart(a.length, '0');
+        const target = (dstValue + code - first).toString(16).padStart(dst.length, '0');
+        if (target.length > dst.length) throw new Error('ToUnicode bfrange destination overflow');
+        add(sourceCode, target);
       }
     }
   }
