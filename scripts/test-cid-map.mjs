@@ -23,6 +23,7 @@ try {
   assert.equal(gidMap.get(0), 10);
   assert.equal(gidMap.get(2), 12);
   assert.throws(() => parseCidToGidMap(new Uint8Array([0])), /odd byte length/);
+  assert.throws(() => parseCidToGidMap(new Uint8Array(0x20002)), /16-bit CID limit/);
 
   const encoding = parseEncodingCMap(`
     1 begincodespacerange <0000> <FFFF> endcodespacerange
