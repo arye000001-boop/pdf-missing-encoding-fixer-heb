@@ -8,6 +8,9 @@ export function parseCidToGidMap(bytes: Uint8Array): Map<number, number> {
   if (bytes.byteLength % 2 !== 0) {
     throw new Error('CIDToGIDMap stream has an odd byte length');
   }
+  if (bytes.byteLength > 0x20000) {
+    throw new Error('CIDToGIDMap stream exceeds the 16-bit CID limit');
+  }
   const result = new Map<number, number>();
   for (let cid = 0; cid < bytes.byteLength / 2; cid++) {
     const gid = (bytes[cid * 2] << 8) | bytes[cid * 2 + 1];
