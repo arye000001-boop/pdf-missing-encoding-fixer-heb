@@ -21,7 +21,7 @@
  * Normalizing both sides is essential when joining per-font calibration results.
  */
 export function normalizeFontName(name: string): string {
-  return name.replace(/^[A-Z]{6}\\+/, '');
+  return name.replace(/^[A-Z]{6}\+/, '');
 }
 
 /** 27 glyph slots: 22 letters + 5 finals, final-before-regular, ending at ת. */
