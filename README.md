@@ -75,10 +75,16 @@ Pages → "GitHub Actions" in the repo settings once.
 
 ## Limitations
 
+- **Type0 / CIDFont composite fonts are detected and reported, but are not yet
+  repaired.** Their source character codes can be multi-byte and must be mapped
+  through the Encoding CMap and descendant CIDFont before a valid
+  `/ToUnicode` CMap can be written. The current 256-byte probe is deliberately
+  not used for these fonts.
 - Fonts with **no consistent glyph identity** (e.g. some Type3 vector fonts)
-  can't be decoded deterministically.
-- **Anchorless** lost fonts rely on the `maxGid - 26` guess; if their highest
-  glyph isn't ת, some glyphs may not be recovered and keep their original
-  (broken) text. The page still renders identically.
-- Pure-ASCII-encoded Hebrew fonts that show no broken-mapping signal are left
-  untouched, to avoid corrupting legitimate Latin text.
+  cannot be decoded deterministically.
+- Legacy Adv* fonts without a validated family calibration are left untouched
+  rather than decoded using an unsafe `maxGid - 26` guess.
+- Pure-ASCII-encoded Hebrew fonts that show no broken-mapping signal may remain
+  untouched until their font-specific encoding is identified.
+- The app reports detected Type0/CID fonts after processing so a user is not
+  led to believe that such a document was fully repaired.
