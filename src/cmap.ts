@@ -81,6 +81,7 @@ export function parseEncodingCMap(source: string): EncodingCMap {
         }
         const code = hexValue(src);
         add(code.value, code.byteLength, Number(cid));
+        maxCodeBytes = Math.max(maxCodeBytes, code.byteLength);
       }
       if (tokens[i + 1] !== 'endcidchar') throw new Error('Unterminated cidchar');
       i++;
