@@ -36,6 +36,10 @@ try {
 
   // Identical numeric values with different source-code lengths must not collide.
   const mixedLength = parseEncodingCMap(`
+    2 begincodespacerange
+      <00> <FF>
+      <0000> <FFFF>
+    endcodespacerange
     2 begincidchar
       <01> 7
       <0001> 99
