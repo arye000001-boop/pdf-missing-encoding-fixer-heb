@@ -35,6 +35,7 @@ export function knownLegacyHebrewAlpha(name: string): number | undefined {
   if (/Advfrank-b$/i.test(key)) return 14;
   if (/Advhadasa_b$/i.test(key)) return 15;
   if (/Advhadasa_n$/i.test(key)) return 27;
+  if (/Advviloldii$/i.test(key)) return 21;
   return undefined;
 }
 
