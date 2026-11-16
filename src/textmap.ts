@@ -1139,6 +1139,8 @@ export function buildTagFontDecoders(
     const isKnownLegacyHebrewFont =
       /Adv(?:frank|vilna|hadasa|miryam|narkis)/i.test(name);
     if (!hasToUnicode && isKnownLegacyHebrewFont) {
+      // Default to unresolved; clear this only after a verified calibration.
+      legacyUnresolved.add(name);
       const probe = probeFontGlyphs(doc, i);
       if (probe.length === 256) {
         const realGids = probe.map((g) => g.gid).filter((gid) => gid > 0);
@@ -1161,6 +1163,7 @@ export function buildTagFontDecoders(
           )
         ) {
           legacyLost.set(name, { alpha: knownAlpha, confident: true });
+          legacyUnresolved.delete(name);
         } else if (
           knownAlpha === undefined &&
           distinctGids.size >= 27 &&
@@ -1173,8 +1176,10 @@ export function buildTagFontDecoders(
             votes.get(name) ?? new Map(),
             probeMaxGid,
           );
-          if (anchored.confident) legacyLost.set(name, anchored);
-          else legacyUnresolved.add(name);
+          if (anchored.confident) {
+            legacyLost.set(name, anchored);
+            legacyUnresolved.delete(name);
+          }
         } else {
           legacyUnresolved.add(name);
         }
