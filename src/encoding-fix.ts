@@ -1,6 +1,8 @@
 import * as mupdf from 'mupdf';
 import { decodeGid } from './tag-decode';
 import { buildHebrewNameCodeMap, buildTagFontDecoders, decodeCp1255Glyph } from './textmap';
+import { identityEncodingCMap, parseEncodingCMap } from './cmap';
+import { buildType0HebrewMap, buildVariableToUnicodeCMap, parseCidToGidMap } from './cid-map';
 
 export interface EncodingFixProgress {
   font: number;
@@ -55,7 +57,8 @@ export function fixPdfEncoding(
   type Target =
     | { objNum: number; name: string; kind: 'named'; table: Map<number, string> }
     | { objNum: number; name: string; kind: 'lost'; alpha: number }
-    | { objNum: number; name: string; kind: 'cp1255' };
+    | { objNum: number; name: string; kind: 'cp1255' }
+    | { objNum: number; name: string; kind: 'type0'; table: Map<string, string> };
   const targets: Target[] = [];
   const objCount = doc.countObjects();
   for (let i = 1; i < objCount; i++) {
@@ -69,9 +72,49 @@ export function fixPdfEncoding(
     const type = o.get('Type');
     if (!type || !type.isName() || type.asName() !== 'Font') continue;
     const sub = o.get('Subtype');
-    if (!sub || !sub.isName() || !SIMPLE_SUBTYPES.has(sub.asName())) continue;
+    if (!sub || !sub.isName()) continue;
     const bf = o.get('BaseFont');
     const name = bf && bf.isName() ? bf.asName() : '';
+
+    // Type0 support is deliberately limited to CIDFontType2, whose
+    // CIDToGIDMap is specified by PDF as Identity or a two-byte stream.
+    if (sub.asName() === 'Type0') {
+      const alpha = alphaByName.get(name);
+      if (alpha === undefined) continue;
+      try {
+        const encodingObj = o.get('Encoding');
+        let encoding = encodingObj?.isName()
+          ? identityEncodingCMap(encodingObj.asName())
+          : null;
+        if (!encoding && encodingObj?.isStream()) {
+          const cmapBytes = encodingObj.readStream();
+          encoding = parseEncodingCMap(new TextDecoder('latin1').decode(cmapBytes));
+        }
+        if (!encoding) continue;
+
+        const descendants = o.get('DescendantFonts');
+        if (!descendants?.isArray() || descendants.length < 1) continue;
+        const descendant = descendants.get(0).resolve();
+        if (!descendant?.isDictionary()) continue;
+        const descendantSubtype = descendant.get('Subtype');
+        if (!descendantSubtype?.isName() || descendantSubtype.asName() !== 'CIDFontType2') continue;
+
+        const cidToGidObj = descendant.get('CIDToGIDMap');
+        let cidToGid: Map<number, number> | null = null;
+        if (cidToGidObj?.isName()) {
+          if (cidToGidObj.asName() !== 'Identity') continue;
+        } else if (cidToGidObj?.isStream()) {
+          cidToGid = parseCidToGidMap(cidToGidObj.readStream());
+        }
+        const table = buildType0HebrewMap(encoding, cidToGid, alpha);
+        if (table.size > 0) targets.push({ objNum: i, name, kind: 'type0', table });
+      } catch {
+        // Unsupported or malformed CMaps are left untouched; never guess.
+      }
+      continue;
+    }
+
+    if (!SIMPLE_SUBTYPES.has(sub.asName())) continue;
     const namedTable = buildHebrewNameCodeMap(o);
     if (namedTable.size >= 3) {
       targets.push({ objNum: i, name, kind: 'named', table: namedTable });
@@ -90,6 +133,13 @@ export function fixPdfEncoding(
     if (target.kind === 'named') {
       if (target.table.size === 0) continue;
       const cmap = buildToUnicodeCMap(target.table);
+      const stream = doc.addStream(cmap, doc.newDictionary());
+      doc.newIndirect(target.objNum).put('ToUnicode', stream);
+      if (!fixedFonts.includes(target.name)) fixedFonts.push(target.name);
+      continue;
+    }
+    if (target.kind === 'type0') {
+      const cmap = buildVariableToUnicodeCMap(target.table);
       const stream = doc.addStream(cmap, doc.newDictionary());
       doc.newIndirect(target.objNum).put('ToUnicode', stream);
       if (!fixedFonts.includes(target.name)) fixedFonts.push(target.name);
