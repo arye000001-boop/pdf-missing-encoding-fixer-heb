@@ -176,7 +176,17 @@ export function fixPdfEncoding(
       if (ch) table.set(code, ch);
     }
     if (table.size === 0) continue;
-    const cmap = buildToUnicodeCMap(table);
+    // Preserve valid punctuation/Latin mappings from an incomplete existing
+    // ToUnicode CMap while overlaying the recovered Hebrew glyph mappings.
+    let merged: Map<number, string>;
+    try {
+      merged = readExistingSimpleToUnicode(doc.newIndirect(target.objNum).resolve());
+    } catch {
+      // Unknown CMap syntax is left untouched rather than partially destroyed.
+      continue;
+    }
+    for (const [code, ch] of table) merged.set(code, ch);
+    const cmap = buildToUnicodeCMap(merged);
     const stream = doc.addStream(cmap, doc.newDictionary());
     doc.newIndirect(target.objNum).put('ToUnicode', stream);
     if (!fixedFonts.includes(target.name)) fixedFonts.push(target.name);
