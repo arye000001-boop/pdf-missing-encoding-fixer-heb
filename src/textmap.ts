@@ -1155,7 +1155,7 @@ export function buildTagFontDecoders(
     const toUnicode = o.get('ToUnicode');
     const hasToUnicode = !!toUnicode && !toUnicode.isNull();
     const isKnownLegacyHebrewFont =
-      /Adv(?:frank|vilna|hadasa|miryam|narkis)/i.test(fontKey);
+      /Adv(?:frank|vilna|viloldii|hadasa|miryam|narkis)/i.test(fontKey);
     const knownAlpha = knownLegacyHebrewAlpha(fontKey);
     const needsLegacyRecovery =
       isKnownLegacyHebrewFont &&
