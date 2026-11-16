@@ -1113,6 +1113,10 @@ export function buildTagFontDecoders(
   // fallback to known Hebrew font families AND missing /ToUnicode, then
   // calibrate from the complete 256-code font probe rather than page samples.
   const legacyLost = new Map<string, AlphaResult>();
+  // Recognized legacy Hebrew families must never fall through to the generic
+  // maxGid-26 heuristic when their per-family calibration is unavailable.
+  // A false positive here would write a plausible but incorrect ToUnicode map.
+  const legacyUnresolved = new Set<string>();
   const objCount = doc.countObjects();
   for (let i = 1; i < objCount; i++) {
     let o: mupdf.PDFObject;
@@ -1162,10 +1166,17 @@ export function buildTagFontDecoders(
           distinctGids.size >= 27 &&
           probeMaxGid >= 26
         ) {
-          legacyLost.set(
-            name,
-            solveAlphaFromVotes(votes.get(name) ?? new Map(), probeMaxGid),
+          // For other Adv* families, accept only a unanimous anchor-derived
+          // offset. solveAlphaFromVotes otherwise falls back to maxGid-26,
+          // which is known to be unsafe for CFF fonts with trailing glyphs.
+          const anchored = solveAlphaFromVotes(
+            votes.get(name) ?? new Map(),
+            probeMaxGid,
           );
+          if (anchored.confident) legacyLost.set(name, anchored);
+          else legacyUnresolved.add(name);
+        } else {
+          legacyUnresolved.add(name);
         }
       }
     }
@@ -1188,7 +1199,7 @@ export function buildTagFontDecoders(
   const lost = new Map<string, AlphaResult>(legacyLost);
   const cp1255 = new Set<string>();
   for (const [font, s] of stats) {
-    if (namedGlyphs.has(font) || lost.has(font)) continue;
+    if (namedGlyphs.has(font) || lost.has(font) || legacyUnresolved.has(font)) continue;
     const regime = classifyFontRegime(s);
     if (regime === 'cp1255') {
       cp1255.add(font);
