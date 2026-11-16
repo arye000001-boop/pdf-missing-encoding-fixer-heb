@@ -83,7 +83,8 @@ export function fixPdfEncoding(
       // be merged without dropping source mappings.
       const existingToUnicode = o.get('ToUnicode');
       if (existingToUnicode && !existingToUnicode.isNull()) continue;
-      const fontKey = normalizeFontName(name);\n      const alpha = alphaByName.get(fontKey);
+      const fontKey = normalizeFontName(name);
+      const alpha = alphaByName.get(fontKey);
       if (alpha === undefined) continue;
       try {
         const encodingObj = o.get('Encoding');
