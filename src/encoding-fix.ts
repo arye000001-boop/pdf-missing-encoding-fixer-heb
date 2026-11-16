@@ -132,7 +132,15 @@ export function fixPdfEncoding(
     opts?.onProgress?.({ font: t + 1, fontCount: targets.length, name: target.name });
     if (target.kind === 'named') {
       if (target.table.size === 0) continue;
-      const cmap = buildToUnicodeCMap(target.table);
+      let merged: Map<number, string>;
+      try {
+        merged = readExistingSimpleToUnicode(doc.newIndirect(target.objNum).resolve());
+      } catch {
+        // Do not overwrite a nontrivial CMap we cannot safely preserve.
+        continue;
+      }
+      for (const [code, letter] of target.table) merged.set(code, letter);
+      const cmap = buildToUnicodeCMap(merged);
       const stream = doc.addStream(cmap, doc.newDictionary());
       doc.newIndirect(target.objNum).put('ToUnicode', stream);
       if (!fixedFonts.includes(target.name)) fixedFonts.push(target.name);
@@ -239,6 +247,50 @@ function utf16beHex(s: string): string {
  * Serialise a single-byte `code → string` table as a PDF ToUnicode CMap.
  * `bfchar` blocks are capped at 100 entries each, per the spec.
  */
+
+/** Read the existing one-byte ToUnicode mappings so a Hebrew repair does not
+ * erase punctuation, Latin letters, or other valid characters in the font. */
+function readExistingSimpleToUnicode(font: mupdf.PDFObject): Map<number, string> {
+  const result = new Map<number, string>();
+  const obj = font.get('ToUnicode');
+  if (!obj || obj.isNull()) return result;
+  if (!obj.isStream()) throw new Error('Unsupported existing ToUnicode object');
+  const bytes = obj.readStream().asUint8Array();
+  const source = new TextDecoder('latin1').decode(bytes);
+  if (/beginbfrange[\s\S]*?\[[\s\S]*?\]/.test(source)) {
+    throw new Error('Array-form ToUnicode bfrange is not supported for safe merge');
+  }
+  const readHex = (value: string) => value.slice(1, -1).replace(/\s+/g, '');
+  const decodeUtf16 = (hex: string): string => {
+    if (!hex || hex.length % 4 !== 0) throw new Error('Invalid UTF-16 ToUnicode destination');
+    let out = '';
+    for (let i = 0; i < hex.length; i += 4) out += String.fromCharCode(parseInt(hex.slice(i, i + 4), 16));
+    return out;
+  };
+  for (const block of source.matchAll(/\d+\s+beginbfchar([\s\S]*?)endbfchar/g)) {
+    const pairs = [...block[1].matchAll(/(<[0-9A-Fa-f\s]+>)\s*(<[0-9A-Fa-f\s]+>)/g)];
+    for (const pair of pairs) {
+      const src = readHex(pair[1]);
+      if (src.length !== 2) continue;
+      result.set(parseInt(src, 16), decodeUtf16(readHex(pair[2])));
+    }
+  }
+  for (const block of source.matchAll(/\d+\s+beginbfrange([\s\S]*?)endbfrange/g)) {
+    const lines = block[1].match(/<[^>]+>\s*<[^>]+>\s*<[^>]+>/g) ?? [];
+    for (const line of lines) {
+      const parts = [...line.matchAll(/<([^>]+)>/g)].map((m) => m[1].replace(/\s+/g, ''));
+      if (parts.length !== 3 || parts[0].length !== 2 || parts[1].length !== 2) continue;
+      const first = parseInt(parts[0], 16), last = parseInt(parts[1], 16);
+      const dest = parseInt(parts[2], 16);
+      if (last < first || last - first > 255 || !Number.isFinite(dest)) throw new Error('Unsafe ToUnicode bfrange');
+      for (let code = first; code <= last; code++) {
+        result.set(code, String.fromCharCode(dest + code - first));
+      }
+    }
+  }
+  return result;
+}
+
 function buildToUnicodeCMap(table: Map<number, string>): string {
   const entries = [...table.entries()].sort((a, b) => a[0] - b[0]);
   const head =
