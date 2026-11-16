@@ -1019,7 +1019,7 @@ function forEachGlyph(
         const py = trm[5];
         const x = ctm[0] * px + ctm[2] * py + ctm[4];
         const y = ctm[1] * px + ctm[3] * py + ctm[5];
-        cb(fontNameOf(font), gid, unicode || 0, x, y);
+        cb(normalizeFontName(fontNameOf(font)), gid, unicode || 0, x, y);
       },
     });
   };
@@ -1325,7 +1325,7 @@ function walkStructuredText(
       if (typeof size === 'number' && size > 0 && size < 2) return;
       const h = quadYMax(quad) - quadYMin(quad);
       if (h > 0 && h < 1) return;
-      const fontName = fontNameOf(font);
+      const fontName = normalizeFontName(fontNameOf(font));
       const named = decoders?.namedGlyphs.get(fontName);
       if (named && lostGlyphs) {
         const g = lostGlyphs.get(`${fontName}|${originKey(origin[0], origin[1])}`);
