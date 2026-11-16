@@ -172,7 +172,7 @@ export function fixPdfEncoding(
           ? decodeGid(target.alpha, gid, uni)
           : gid === 0
             ? '' // unused code slot — no glyph
-            : decodeCp1255Glyph(target.name, uni);
+            : decodeCp1255Glyph(normalizeFontName(target.name), uni);
       if (ch) table.set(code, ch);
     }
     if (table.size === 0) continue;
