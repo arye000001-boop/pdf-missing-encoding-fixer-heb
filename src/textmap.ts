@@ -1140,9 +1140,28 @@ export function buildTagFontDecoders(
         const realGids = probe.map((g) => g.gid).filter((gid) => gid > 0);
         const distinctGids = new Set(realGids);
         const probeMaxGid = realGids.length > 0 ? Math.max(...realGids) : 0;
-        // A full Hebrew alphabet must be present before using the legacy
-        // alphabet-order fallback. This avoids guessing on sparse logo fonts.
-        if (distinctGids.size >= 27 && probeMaxGid >= 26) {
+        // AdvFrank / AdvHadasa CFF subsets append punctuation and
+        // alternate glyphs AFTER the Hebrew alphabet. Therefore maxGid-26
+        // is not a valid base offset for these fonts.
+        // Use a family-specific window only when all 27 glyph IDs are
+        // present in the probe; otherwise leave the font untouched.
+        const knownAlpha: number | undefined =
+          /Advfrank-n$/i.test(name) ? 27 :
+          /Advfrank-b$/i.test(name) ? 14 :
+          /Advhadasa_b$/i.test(name) ? 15 :
+          undefined;
+        if (
+          knownAlpha !== undefined &&
+          Array.from({ length: 27 }, (_, i) => knownAlpha + i).every((gid) =>
+            distinctGids.has(gid),
+          )
+        ) {
+          legacyLost.set(name, { alpha: knownAlpha, confident: true });
+        } else if (
+          knownAlpha === undefined &&
+          distinctGids.size >= 27 &&
+          probeMaxGid >= 26
+        ) {
           legacyLost.set(
             name,
             solveAlphaFromVotes(votes.get(name) ?? new Map(), probeMaxGid),
