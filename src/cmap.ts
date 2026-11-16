@@ -26,7 +26,7 @@ export function encodingCodeKey(value: number, byteLength: number): string {
 const MAX_EXPANDED_MAPPINGS = 1_000_000;
 
 function hexValue(token: string): { value: number; byteLength: number } {
-  const hex = token.slice(1, -1).replace(/\\s+/g, '');
+  const hex = token.slice(1, -1).replace(/\s+/g, '');
   if (!hex || hex.length % 2 !== 0 || hex.length > 8 || !/^[0-9a-f]+$/i.test(hex)) {
     throw new Error(`Invalid CMap hex string: ${token}`);
   }
@@ -36,8 +36,8 @@ function hexValue(token: string): { value: number; byteLength: number } {
 /** Parse codespacerange, begincidchar and begincidrange sections. */
 export function parseEncodingCMap(source: string): EncodingCMap {
   // PDF comments run to end-of-line. Tokenization keeps hex strings atomic.
-  const withoutComments = source.replace(/%[^\\r\\n]*/g, '');
-  const tokens = withoutComments.match(/<[^<>]*>|\\[|\\]|-?\\d+|[A-Za-z][A-Za-z0-9]*|[^\\s]/g) ?? [];
+  const withoutComments = source.replace(/%[^\r\n]*/g, '');
+  const tokens = withoutComments.match(/<[^<>]*>|\[|\]|-?\d+|[A-Za-z][A-Za-z0-9]*|[^\s]/g) ?? [];
   const codeSpaces: CodeSpaceRange[] = [];
   const codeToCid = new Map<string, number>();
   let maxCodeBytes = 0;
@@ -76,7 +76,7 @@ export function parseEncodingCMap(source: string): EncodingCMap {
       while (i + 1 < tokens.length && tokens[i + 1] !== 'endcidchar') {
         const src = tokens[++i];
         const cid = tokens[++i];
-        if (!src?.startsWith('<') || !/^-?\\d+$/.test(cid ?? '')) {
+        if (!src?.startsWith('<') || !/^-?\d+$/.test(cid ?? '')) {
           throw new Error('Malformed CMap cidchar');
         }
         const code = hexValue(src);
@@ -91,7 +91,7 @@ export function parseEncodingCMap(source: string): EncodingCMap {
         const lastToken = tokens[++i];
         const cidToken = tokens[++i];
         if (!firstToken?.startsWith('<') || !lastToken?.startsWith('<') ||
-            !/^-?\\d+$/.test(cidToken ?? '')) {
+            !/^-?\d+$/.test(cidToken ?? '')) {
           throw new Error('Malformed CMap cidrange');
         }
         const first = hexValue(firstToken);
