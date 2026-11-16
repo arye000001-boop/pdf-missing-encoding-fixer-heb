@@ -11,15 +11,13 @@ await build({
 try {
   const { parseCidToGidMap, buildType0HebrewMap, buildVariableToUnicodeCMap } =
     await import(pathToFileURL(bundle).href);
+  const cmapBundle = new URL('../.cid-cmap-test.mjs', import.meta.url).pathname;
+  await build({
+    entryPoints: [new URL('../src/cmap.ts', import.meta.url).pathname],
+    bundle: true, format: 'esm', platform: 'node', outfile: cmapBundle, logLevel: 'error',
+  });
   const { identityEncodingCMap, parseEncodingCMap, encodingCodeKey } =
-    await import(pathToFileURL(new URL('../src/cmap.ts', import.meta.url)).href).catch(async () => {
-      const cmapBundle = new URL('../.cid-cmap-test.mjs', import.meta.url).pathname;
-      await build({
-        entryPoints: [new URL('../src/cmap.ts', import.meta.url).pathname],
-        bundle: true, format: 'esm', platform: 'node', outfile: cmapBundle, logLevel: 'error',
-      });
-      return import(pathToFileURL(cmapBundle).href);
-    });
+    await import(pathToFileURL(cmapBundle).href);
 
   const gidMap = parseCidToGidMap(new Uint8Array([0, 10, 0, 11, 0, 12]));
   assert.equal(gidMap.get(0), 10);
