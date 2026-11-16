@@ -1,5 +1,5 @@
 import * as mupdf from 'mupdf';
-import { decodeGid } from './tag-decode';
+import { decodeGid, normalizeFontName } from './tag-decode';
 import { buildHebrewNameCodeMap, buildTagFontDecoders, decodeCp1255Glyph } from './textmap';
 import { identityEncodingCMap, parseEncodingCMap } from './cmap';
 import { buildType0HebrewMap, buildVariableToUnicodeCMap, parseCidToGidMap } from './cid-map';
@@ -47,7 +47,7 @@ export function fixPdfEncoding(
   // `alpha` is a property of the embedded font program, keyed by PostScript
   // name (what the render device reports and what `/BaseFont` carries).
   const alphaByName = new Map(
-    [...decoders.lost].map(([name, r]) => [name, r.alpha]),
+    [...decoders.lost].map(([name, r]) => [normalizeFontName(name), r.alpha]),
   );
 
   // Collect the target font dictionaries first: probing mutates the page tree
@@ -83,7 +83,7 @@ export function fixPdfEncoding(
       // be merged without dropping source mappings.
       const existingToUnicode = o.get('ToUnicode');
       if (existingToUnicode && !existingToUnicode.isNull()) continue;
-      const alpha = alphaByName.get(name);
+      const fontKey = normalizeFontName(name);\n      const alpha = alphaByName.get(fontKey);
       if (alpha === undefined) continue;
       try {
         const encodingObj = o.get('Encoding');
@@ -126,7 +126,7 @@ export function fixPdfEncoding(
     }
     const alpha = alphaByName.get(name);
     if (alpha !== undefined) targets.push({ objNum: i, name, kind: 'lost', alpha });
-    else if (decoders.cp1255.has(name))
+    else if (decoders.cp1255.has(fontKey))
       targets.push({ objNum: i, name, kind: 'cp1255' });
   }
 
