@@ -16,6 +16,14 @@
  * across the sample corpus.
  */
 
+/** Remove the six-uppercase-letter subset prefix used in PDF /BaseFont names.
+ * MuPDF's runtime font name normally omits this prefix; PDF dictionaries keep it.
+ * Normalizing both sides is essential when joining per-font calibration results.
+ */
+export function normalizeFontName(name: string): string {
+  return name.replace(/^[A-Z]{6}\\+/, '');
+}
+
 /** 27 glyph slots: 22 letters + 5 finals, final-before-regular, ending at ת. */
 export const LETTER_ORDER = Array.from('אבגדהוזחטיךכלםמןנסעףפץצקרשת');
 const LETTER_INDEX: Record<string, number> = Object.fromEntries(
