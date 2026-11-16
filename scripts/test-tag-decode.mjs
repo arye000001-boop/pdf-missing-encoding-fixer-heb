@@ -19,7 +19,10 @@ try {
     decodeGid, solveAlphaFromVotes,
   } = await import(pathToFileURL(bundle).href);
 
-  assert.equal(normalizeFontName('LOOMOH+Advfrank-n'), 'Advfrank-n');\n  assert.equal(normalizeFontName('Advvilna-b'), 'Advvilna-b');\n\n  assert.equal(LETTER_ORDER.length, 27);
+  assert.equal(normalizeFontName('LOOMOH+Advfrank-n'), 'Advfrank-n');
+  assert.equal(normalizeFontName('Advvilna-b'), 'Advvilna-b');
+
+  assert.equal(LETTER_ORDER.length, 27);
   assert.equal(LETTER_ORDER[0], 'א');
   assert.equal(LETTER_ORDER[10], 'ך');
   assert.equal(LETTER_ORDER[26], 'ת');
