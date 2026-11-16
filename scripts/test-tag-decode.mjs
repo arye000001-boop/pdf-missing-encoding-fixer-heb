@@ -15,7 +15,7 @@ await build({
 });
 try {
   const {
-    LETTER_ORDER, anchorAlpha, classifyFontRegime, normalizeFontName, knownLegacyHebrewAlpha,
+    LETTER_ORDER, anchorAlpha, classifyFontRegime, normalizeFontName, knownLegacyHebrewAlpha, fixHebrewBracketMappings,
     decodeGid, solveAlphaFromVotes,
   } = await import(pathToFileURL(bundle).href);
 
@@ -27,6 +27,22 @@ try {
   assert.equal(knownLegacyHebrewAlpha('LOONBJ+Advhadasa_n'), 27);
   assert.equal(knownLegacyHebrewAlpha('LOONKM+Advviloldii'), 21);
   assert.equal(knownLegacyHebrewAlpha('Advvilna-b'), undefined);
+
+  // Legacy Hebrew fonts store parenthesis glyphs in visual order. Correct
+  // only verified Hebrew font families; leave unrelated fonts untouched.
+  const brackets = new Map([[0x28, '('], [0x29, ')'], [0x2c, ',']]);
+  fixHebrewBracketMappings('LOOMOH+Advfrank-n', brackets, 'WinAnsiEncoding');
+  assert.equal(brackets.get(0x28), ')');
+  assert.equal(brackets.get(0x29), '(');
+  assert.equal(brackets.get(0x2c), ',');
+  const omittedBrackets = new Map([[0x42, 'א']]);
+  fixHebrewBracketMappings('Advfrank-b', omittedBrackets, 'WinAnsiEncoding');
+  assert.equal(omittedBrackets.get(0x28), ')');
+  assert.equal(omittedBrackets.get(0x29), '(');
+  const unrelated = new Map([[0x28, '('], [0x29, ')']]);
+  fixHebrewBracketMappings('TimesNewRoman', unrelated, 'WinAnsiEncoding');
+  assert.equal(unrelated.get(0x28), '(');
+  assert.equal(unrelated.get(0x29), ')');
 
   assert.equal(LETTER_ORDER.length, 27);
   assert.equal(LETTER_ORDER[0], 'א');
