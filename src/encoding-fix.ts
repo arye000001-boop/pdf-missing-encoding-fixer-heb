@@ -1,5 +1,5 @@
 import * as mupdf from 'mupdf';
-import { decodeGid, normalizeFontName } from './tag-decode';
+import { decodeGid, normalizeFontName, fixHebrewBracketMappings } from './tag-decode';
 import { buildHebrewNameCodeMap, buildTagFontDecoders, decodeCp1255Glyph } from './textmap';
 import { identityEncodingCMap, parseEncodingCMap } from './cmap';
 import { buildType0HebrewMap, buildVariableToUnicodeCMap, parseCidToGidMap } from './cid-map';
@@ -146,6 +146,10 @@ export function fixPdfEncoding(
         continue;
       }
       for (const [code, letter] of target.table) merged.set(code, letter);
+      const fontObj = doc.newIndirect(target.objNum).resolve();
+      const encodingObj = fontObj.get('Encoding');
+      const baseEncoding = encodingObj?.isName() ? encodingObj.asName() : undefined;
+      fixHebrewBracketMappings(target.name, merged, baseEncoding);
       const cmap = buildToUnicodeCMap(merged);
       const stream = doc.addStream(cmap, doc.newDictionary());
       doc.newIndirect(target.objNum).put('ToUnicode', stream);
@@ -186,6 +190,10 @@ export function fixPdfEncoding(
       continue;
     }
     for (const [code, ch] of table) merged.set(code, ch);
+    const fontObj = doc.newIndirect(target.objNum).resolve();
+    const encodingObj = fontObj.get('Encoding');
+    const baseEncoding = encodingObj?.isName() ? encodingObj.asName() : undefined;
+    fixHebrewBracketMappings(target.name, merged, baseEncoding);
     const cmap = buildToUnicodeCMap(merged);
     const stream = doc.addStream(cmap, doc.newDictionary());
     doc.newIndirect(target.objNum).put('ToUnicode', stream);
