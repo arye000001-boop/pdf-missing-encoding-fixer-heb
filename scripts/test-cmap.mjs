@@ -52,6 +52,8 @@ try {
   assert.throws(() => parseEncodingCMap('1 begincidrange <00000000> <000FFFFF> 0 endcidrange'), /safe mapping limit/);
   assert.throws(() => parseEncodingCMap('/Identity-H usecmap'), /Unsupported inherited/);
   assert.throws(() => parseEncodingCMap('1 beginnotdefrange <0000> <00FF> 0 endnotdefrange'), /Unsupported inherited/);
+  assert.throws(() => parseEncodingCMap('1 begincidchar <0001> 7 endcidchar'), /no codespacerange/);
+  assert.throws(() => parseEncodingCMap('1 begincodespacerange <0000> <00FF> endcodespacerange 1 begincidchar <0100> 7 endcidchar'), /outside every declared codespacerange/);
   console.log('CMap parser regression tests: PASS');
 } finally {
   rmSync(bundle, { force: true });
