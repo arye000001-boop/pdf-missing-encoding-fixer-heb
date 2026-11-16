@@ -1080,6 +1080,13 @@ export function buildTagFontDecoders(
   }
 
   const namedGlyphs = new Map<string, Map<number, string>>();
+  // Several older Adv* Hebrew fonts use ordinary WinAnsi byte codes for
+  // Hebrew-shaped glyphs but ship without /ToUnicode. MuPDF consequently
+  // reports ASCII Latin letters (A-Z), so the generic Unicode-distribution
+  // classifier cannot distinguish them from real English. Restrict this
+  // fallback to known Hebrew font families AND missing /ToUnicode, then
+  // calibrate from the complete 256-code font probe rather than page samples.
+  const legacyLost = new Map<string, AlphaResult>();
   const objCount = doc.countObjects();
   for (let i = 1; i < objCount; i++) {
     let o: mupdf.PDFObject;
@@ -1096,6 +1103,28 @@ export function buildTagFontDecoders(
     const bf = o.get('BaseFont');
     const name = bf && bf.isName() ? bf.asName() : '';
     if (!stats.has(name)) continue;
+
+    const toUnicode = o.get('ToUnicode');
+    const hasToUnicode = !!toUnicode && !toUnicode.isNull();
+    const isKnownLegacyHebrewFont =
+      /Adv(?:frank|vilna|hadasa|miryam|narkis)/i.test(name);
+    if (!hasToUnicode && isKnownLegacyHebrewFont) {
+      const probe = probeFontGlyphs(doc, i);
+      if (probe.length === 256) {
+        const realGids = probe.map((g) => g.gid).filter((gid) => gid > 0);
+        const distinctGids = new Set(realGids);
+        const probeMaxGid = realGids.length > 0 ? Math.max(...realGids) : 0;
+        // A full Hebrew alphabet must be present before using the legacy
+        // alphabet-order fallback. This avoids guessing on sparse logo fonts.
+        if (distinctGids.size >= 27 && probeMaxGid >= 26) {
+          legacyLost.set(
+            name,
+            solveAlphaFromVotes(votes.get(name) ?? new Map(), probeMaxGid),
+          );
+        }
+      }
+    }
+
     const codeMap = buildHebrewNameCodeMap(o);
     if (codeMap.size < 3) continue;
     const glyphs = probeFontGlyphs(doc, i);
@@ -1111,10 +1140,10 @@ export function buildTagFontDecoders(
     }
   }
 
-  const lost = new Map<string, AlphaResult>();
+  const lost = new Map<string, AlphaResult>(legacyLost);
   const cp1255 = new Set<string>();
   for (const [font, s] of stats) {
-    if (namedGlyphs.has(font)) continue;
+    if (namedGlyphs.has(font) || lost.has(font)) continue;
     const regime = classifyFontRegime(s);
     if (regime === 'cp1255') {
       cp1255.add(font);
