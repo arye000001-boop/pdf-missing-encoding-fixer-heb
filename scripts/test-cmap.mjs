@@ -38,7 +38,7 @@ try {
   ]);
   assert.equal(identityEncodingCMap('Identity-V')?.maxCodeBytes, 2);
   assert.equal(identityEncodingCMap('WinAnsiEncoding'), null);
-  assert.throws(() => parseEncodingCMap('1 begincidrange <0000> <FFFFFF> 0 endcidrange'), /safe mapping limit/);
+  assert.throws(() => parseEncodingCMap('1 begincidrange <00000000> <000FFFFF> 0 endcidrange'), /safe mapping limit/);
   console.log('CMap parser regression tests: PASS');
 } finally {
   rmSync(bundle, { force: true });
