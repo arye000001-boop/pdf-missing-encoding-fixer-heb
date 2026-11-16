@@ -804,6 +804,18 @@ const GLYPH_NAME_TO_HEBREW: Record<string, string> = {
   shinhebrew: 'ש',
   tav: 'ת',
   tavhebrew: 'ת',
+  // Legacy Adv* subset fonts also use Adobe Latin glyph names as
+  // stable Hebrew-letter aliases. These are the same anchor slots used by
+  // LATIN_ANCHOR in tag-decode.ts, but resolving them here lets us build a
+  // direct source-code → Unicode map from /Encoding /Differences.
+  AE: 'ב',
+  ae: 'ס',
+  Lslash: 'ט',
+  lslash: 'ר',
+  Oslash: 'י',
+  oslash: 'ש',
+  OE: 'ך',
+  oe: 'ת',
   // MacRoman glyph names interpreted as Mac OS Hebrew bytes.
   daggerdbl: 'א',
   periodcentered: 'ב',
@@ -902,7 +914,21 @@ function isBiblicalTranslitEncoding(names: string[]): boolean {
 }
 
 export function decodeHebrewGlyphName(name: string): string | undefined {
-  return GLYPH_NAME_TO_HEBREW[name];
+  const direct = GLYPH_NAME_TO_HEBREW[name];
+  if (direct !== undefined) return direct;
+
+  // Some Advvilna / Advnarkis / Advhadasa CFF subsets name their Hebrew
+  // glyphs C224, C226, ... where the decimal suffix is the original
+  // Windows-1255 byte (224 = 0xE0 = alef). This is a glyph-name encoding,
+  // not a GID-order assumption, and remains valid for sparse subsets.
+  const cp1255Name = /^C(\\d{3})$/.exec(name);
+  if (cp1255Name) {
+    const byte = Number(cp1255Name[1]);
+    if (byte >= 0xe0 && byte <= 0xfa) {
+      return String.fromCodePoint(0x05d0 + byte - 0xe0);
+    }
+  }
+  return undefined;
 }
 
 export function buildHebrewNameCodeMap(fontObj: mupdf.PDFObject): Map<number, string> {
