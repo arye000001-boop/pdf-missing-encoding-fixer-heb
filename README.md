@@ -68,18 +68,19 @@ npm run build      # production build into dist/
 
 ## Deploy (GitHub Pages)
 
-Push to `master`. The included workflow builds with
+Push to `fix/hebrew-extraction-and-rtl` for the preview site (or `master` for the main site). The included workflow builds with
 `VITE_BASE=/pdf-missing-encoding-fixer-heb/` (the repo name, so asset paths
 resolve under the project Pages URL) and publishes `dist/` to Pages. Enable
 Pages → "GitHub Actions" in the repo settings once.
 
 ## Limitations
 
-- **Type0 / CIDFont composite fonts are detected and reported, but are not yet
-  repaired.** Their source character codes can be multi-byte and must be mapped
-  through the Encoding CMap and descendant CIDFont before a valid
-  `/ToUnicode` CMap can be written. The current 256-byte probe is deliberately
-  not used for these fonts.
+- **Type0 / CIDFont support is currently limited to CIDFontType2.** The fixer
+  handles predefined Identity-H/V and explicit Encoding CMaps, then resolves
+  CID values through an Identity or stream-based CIDToGIDMap. It only writes a
+  ToUnicode map when the font's Hebrew GID alphabet calibration is trusted.
+  CIDFontType0/CFF descendants, unsupported CMap operators, and ambiguous
+  mappings are left untouched and reported rather than guessed.
 - Fonts with **no consistent glyph identity** (e.g. some Type3 vector fonts)
   cannot be decoded deterministically.
 - Legacy Adv* fonts without a validated family calibration are left untouched
