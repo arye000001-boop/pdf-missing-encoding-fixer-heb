@@ -50,6 +50,8 @@ try {
   assert.equal(identityEncodingCMap('Identity-V')?.maxCodeBytes, 2);
   assert.equal(identityEncodingCMap('WinAnsiEncoding'), null);
   assert.throws(() => parseEncodingCMap('1 begincidrange <00000000> <000FFFFF> 0 endcidrange'), /safe mapping limit/);
+  assert.throws(() => parseEncodingCMap('/Identity-H usecmap'), /Unsupported inherited/);
+  assert.throws(() => parseEncodingCMap('1 beginnotdefrange <0000> <00FF> 0 endnotdefrange'), /Unsupported inherited/);
   console.log('CMap parser regression tests: PASS');
 } finally {
   rmSync(bundle, { force: true });
