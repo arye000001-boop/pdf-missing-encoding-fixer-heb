@@ -16,6 +16,8 @@ export interface EncodingCMap {
   /** Keys include byte length: the numeric values <01> and <0001> are distinct codes. */
   codeToCid: Map<string, number>;
   maxCodeBytes: number;
+  /** True only for predefined Identity-H/V maps (source code equals CID). */
+  identity: boolean;
 }
 
 /** Stable lookup key for a source code, preserving its original byte length. */
@@ -114,7 +116,7 @@ export function parseEncodingCMap(source: string): EncodingCMap {
     }
   }
 
-  return { codeSpaces, codeToCid, maxCodeBytes };
+  return { codeSpaces, codeToCid, maxCodeBytes, identity: false };
 }
 
 /** Identity-H and Identity-V are predefined two-byte source-code -> CID maps. */
@@ -124,5 +126,6 @@ export function identityEncodingCMap(name: string): EncodingCMap | null {
     codeSpaces: [{ low: 0, high: 0xffff, byteLength: 2 }],
     codeToCid: new Map(),
     maxCodeBytes: 2,
+    identity: true,
   };
 }
