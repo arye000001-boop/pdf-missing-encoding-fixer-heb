@@ -5,6 +5,7 @@ import {
   classifyFontRegime,
   decodeGid,
   normalizeFontName,
+  knownLegacyHebrewAlpha,
   type FontGlyphStats,
   solveAlphaFromVotes,
 } from './tag-decode';
@@ -977,6 +978,18 @@ const fontNameOf = (font: mupdf.Font | null | undefined): string =>
 
 const SIMPLE_FONT_SUBTYPES = new Set(['Type1', 'TrueType', 'Type3', 'MMType1']);
 
+function toUnicodeContainsHebrew(fontObj: mupdf.PDFObject): boolean {
+  try {
+    const stream = fontObj.get('ToUnicode');
+    if (!stream || stream.isNull() || !stream.isStream()) return false;
+    const source = new TextDecoder('latin1').decode(stream.readStream().asUint8Array());
+    // Hebrew destinations in UTF-16BE are U+05D0–U+05EA.
+    return /05D[0-9A-F]|05E[0-A]/i.test(source);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Run a page through a no-op rendering device purely to observe each glyph's
  * font, glyph-id, mupdf-unicode and on-page origin — the glyph-id is the only
@@ -1143,7 +1156,11 @@ export function buildTagFontDecoders(
     const hasToUnicode = !!toUnicode && !toUnicode.isNull();
     const isKnownLegacyHebrewFont =
       /Adv(?:frank|vilna|hadasa|miryam|narkis)/i.test(fontKey);
-    if (!hasToUnicode && isKnownLegacyHebrewFont) {
+    const knownAlpha = knownLegacyHebrewAlpha(fontKey);
+    const needsLegacyRecovery =
+      isKnownLegacyHebrewFont &&
+      (!hasToUnicode || (knownAlpha !== undefined && !toUnicodeContainsHebrew(o)));
+    if (needsLegacyRecovery) {
       // Default to unresolved; clear this only after a verified calibration.
       legacyUnresolved.add(fontKey);
       const probe = probeFontGlyphs(doc, i);
@@ -1156,11 +1173,6 @@ export function buildTagFontDecoders(
         // is not a valid base offset for these fonts.
         // Use a family-specific window only when all 27 glyph IDs are
         // present in the probe; otherwise leave the font untouched.
-        const knownAlpha: number | undefined =
-          /Advfrank-n$/i.test(fontKey) ? 27 :
-          /Advfrank-b$/i.test(fontKey) ? 14 :
-          /Advhadasa_b$/i.test(fontKey) ? 15 :
-          undefined;
         if (
           knownAlpha !== undefined &&
           Array.from({ length: 27 }, (_, i) => knownAlpha + i).every((gid) =>
