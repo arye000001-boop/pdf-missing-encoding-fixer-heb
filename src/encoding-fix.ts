@@ -79,6 +79,12 @@ export function fixPdfEncoding(
     // Type0 support is deliberately limited to CIDFontType2, whose
     // CIDToGIDMap is specified by PDF as Identity or a two-byte stream.
     if (sub.asName() === 'Type0') {
+      // Do not replace an existing ToUnicode map until we can safely parse
+      // and merge every variable-length bfchar/bfrange form. A partial Hebrew
+      // map would otherwise erase punctuation, Latin text, and symbols.
+      const existingToUnicode = o.get('ToUnicode');
+      if (existingToUnicode && !existingToUnicode.isNull()) continue;
+
       const alpha = alphaByName.get(name);
       if (alpha === undefined) continue;
       try {
