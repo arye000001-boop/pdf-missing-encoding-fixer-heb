@@ -40,6 +40,9 @@ export function parseEncodingCMap(source: string): EncodingCMap {
   // PDF comments run to end-of-line. Tokenization keeps hex strings atomic.
   const withoutComments = source.replace(/%[^\r\n]*/g, '');
   const tokens = withoutComments.match(/<[^<>]*>|\[|\]|-?\d+|[A-Za-z][A-Za-z0-9]*|[^\s]/g) ?? [];
+  if (tokens.includes('usecmap') || tokens.includes('beginnotdefchar') || tokens.includes('beginnotdefrange')) {
+    throw new Error('Unsupported inherited or notdef Encoding CMap operator');
+  }
   const codeSpaces: CodeSpaceRange[] = [];
   const codeToCid = new Map<string, number>();
   let maxCodeBytes = 0;
