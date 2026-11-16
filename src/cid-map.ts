@@ -34,7 +34,7 @@ export function buildType0HebrewMap(
 
   // Identity-H/V means source code == CID. The CIDToGIDMap may in turn be
   // Identity or a stream. Enumerate only the 27 calibrated Hebrew glyphs.
-  if (encoding.codeToCid.size === 0) {
+  if (encoding.identity) {
     // For Identity-H/V, source code equals CID. If CIDToGIDMap is a stream,
     // enumerate its entries; otherwise the CID and GID spaces are identical.
     const cids = cidToGid
