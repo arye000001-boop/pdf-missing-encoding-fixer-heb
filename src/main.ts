@@ -176,15 +176,21 @@ async function handleJobs(jobs: PdfJob[], preferZip = false) {
 
     const fixedFonts = fixed.flatMap((item) => item.fixedFonts);
     const fixedList = compactFontList(fixedFonts, '(אין)');
-    const complexFonts = [...new Set(fixed.flatMap((item) => item.complexFonts))];
+    const complexFonts = [...new Set(fixed.flatMap((item) =>
+      item.complexFonts.filter((font) =>
+        !item.fixedFonts.some((fixedName) =>
+          displayFontName(fixedName) === displayFontName(font),
+        ),
+      ),
+    ))];
     const complexList = compactFontList(complexFonts, '(אין)');
     const pages = fixed.reduce((sum, item) => sum + item.pageCount, 0);
     say(
       `הסתיים. ${fixed.length} קבצים, ${pages} עמודים.\\n` +
         `פונטים שתוקנו: ${fixedList}\\n` +
-        `גופני Type0/CID שלא טופלו במסלול הנוכחי: ${complexList}\\n` +
+        `גופני Type0/CID שלא תוקנו: ${complexList}\\n` +
         (complexFonts.length
-          ? 'שים לב: הקובץ לא תוקן במלואו; נדרש טיפול נפרד בגופנים המורכבים.'
+          ? 'שים לב: נותרו גופני Type0/CID שלא תוקנו; יש לבדוק אותם בנפרד.'
           : 'לא זוהו גופני Type0/CID במסמך.'),
     );
   } catch (e) {
