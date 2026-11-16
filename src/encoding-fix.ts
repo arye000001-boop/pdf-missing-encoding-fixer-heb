@@ -124,7 +124,8 @@ export function fixPdfEncoding(
       targets.push({ objNum: i, name, kind: 'named', table: namedTable });
       continue;
     }
-    const alpha = alphaByName.get(name);
+    const fontKey = normalizeFontName(name);
+    const alpha = alphaByName.get(fontKey);
     if (alpha !== undefined) targets.push({ objNum: i, name, kind: 'lost', alpha });
     else if (decoders.cp1255.has(fontKey))
       targets.push({ objNum: i, name, kind: 'cp1255' });
