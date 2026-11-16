@@ -25,6 +25,7 @@ try {
   assert.equal(knownLegacyHebrewAlpha('LOOMOI+Advfrank-b'), 14);
   assert.equal(knownLegacyHebrewAlpha('LOONBK+Advhadasa_b'), 15);
   assert.equal(knownLegacyHebrewAlpha('LOONBJ+Advhadasa_n'), 27);
+  assert.equal(knownLegacyHebrewAlpha('LOONKM+Advviloldii'), 21);
   assert.equal(knownLegacyHebrewAlpha('Advvilna-b'), undefined);
 
   assert.equal(LETTER_ORDER.length, 27);
