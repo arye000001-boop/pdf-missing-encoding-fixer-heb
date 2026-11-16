@@ -40,6 +40,7 @@ type FixedPdf = {
   bytes: Uint8Array;
   pageCount: number;
   fixedFonts: string[];
+  complexFonts: string[];
   lastModified: number;
 };
 
@@ -123,6 +124,7 @@ async function fixOnePdf(
     bytes,
     pageCount: info.pageCount,
     fixedFonts,
+    complexFonts: info.complexFonts,
     lastModified: job.file.lastModified,
   };
 }
@@ -174,10 +176,16 @@ async function handleJobs(jobs: PdfJob[], preferZip = false) {
 
     const fixedFonts = fixed.flatMap((item) => item.fixedFonts);
     const fixedList = compactFontList(fixedFonts, '(אין)');
+    const complexFonts = [...new Set(fixed.flatMap((item) => item.complexFonts))];
+    const complexList = compactFontList(complexFonts, '(אין)');
     const pages = fixed.reduce((sum, item) => sum + item.pageCount, 0);
     say(
-      `הסתיים. ${fixed.length} קבצים, ${pages} עמודים.\n` +
-        `פונטים שתוקנו: ${fixedList}`,
+      `הסתיים. ${fixed.length} קבצים, ${pages} עמודים.\\n` +
+        `פונטים שתוקנו: ${fixedList}\\n` +
+        `גופני Type0/CID שלא טופלו במסלול הנוכחי: ${complexList}\\n` +
+        (complexFonts.length
+          ? 'שים לב: הקובץ לא תוקן במלואו; נדרש טיפול נפרד בגופנים המורכבים.'
+          : 'לא זוהו גופני Type0/CID במסמך.'),
     );
   } catch (e) {
     say(`שגיאה: ${e instanceof Error ? e.message : String(e)}`);
