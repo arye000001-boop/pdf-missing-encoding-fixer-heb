@@ -921,7 +921,7 @@ export function decodeHebrewGlyphName(name: string): string | undefined {
   // glyphs C224, C226, ... where the decimal suffix is the original
   // Windows-1255 byte (224 = 0xE0 = alef). This is a glyph-name encoding,
   // not a GID-order assumption, and remains valid for sparse subsets.
-  const cp1255Name = /^C(\\d{3})$/.exec(name);
+  const cp1255Name = /^C(\d{3})$/.exec(name);
   if (cp1255Name) {
     const byte = Number(cp1255Name[1]);
     if (byte >= 0xe0 && byte <= 0xfa) {
