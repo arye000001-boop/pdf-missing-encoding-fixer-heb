@@ -222,10 +222,39 @@ function buildToUnicodeCMap(table: Map<number, string>): string {
 export function inspectPdfEncoding(srcBytes: Uint8Array): {
   pageCount: number;
   lostFonts: string[];
+  complexFonts: string[];
 } {
   const doc = mupdf.Document.openDocument(srcBytes, 'application/pdf').asPDF();
   if (!doc) throw new Error('Not a PDF');
   const decoders = buildTagFontDecoders(doc);
+  const complexFonts = new Set<string>();
+  // Type0 fonts use multi-byte character codes and a descendant CIDFont.
+  // The current single-byte probe cannot safely infer their source-code map.
+  // Report them explicitly instead of silently implying the file was fully
+  // inspected or attempting to write a corrupt one-byte ToUnicode CMap.
+  for (let i = 1; i < doc.countObjects(); i++) {
+    let obj: mupdf.PDFObject;
+    try {
+      obj = doc.newIndirect(i).resolve();
+    } catch {
+      continue;
+    }
+    if (!obj || !obj.isDictionary()) continue;
+    const type = obj.get('Type');
+    const subtype = obj.get('Subtype');
+    if (
+      type?.isName() && type.asName() === 'Font' &&
+      subtype?.isName() && subtype.asName() === 'Type0'
+    ) {
+      const baseFont = obj.get('BaseFont');
+      if (baseFont?.isName()) {
+        const rawName = baseFont.asName();
+        complexFonts.add(rawName.split('+').pop() ?? rawName);
+      } else {
+        complexFonts.add(`Type0 font object ${i}`);
+      }
+    }
+  }
   return {
     pageCount: doc.countPages(),
     lostFonts: [
@@ -233,5 +262,6 @@ export function inspectPdfEncoding(srcBytes: Uint8Array): {
       ...decoders.lost.keys(),
       ...decoders.cp1255.keys(),
     ].map((f) => f.split('+').pop() ?? f),
+    complexFonts: [...complexFonts],
   };
 }
