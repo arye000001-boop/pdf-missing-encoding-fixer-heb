@@ -15,12 +15,17 @@ await build({
 });
 try {
   const {
-    LETTER_ORDER, anchorAlpha, classifyFontRegime, normalizeFontName,
+    LETTER_ORDER, anchorAlpha, classifyFontRegime, normalizeFontName, knownLegacyHebrewAlpha,
     decodeGid, solveAlphaFromVotes,
   } = await import(pathToFileURL(bundle).href);
 
   assert.equal(normalizeFontName('LOOMOH+Advfrank-n'), 'Advfrank-n');
   assert.equal(normalizeFontName('Advvilna-b'), 'Advvilna-b');
+  assert.equal(knownLegacyHebrewAlpha('LOOMOH+Advfrank-n'), 27);
+  assert.equal(knownLegacyHebrewAlpha('LOOMOI+Advfrank-b'), 14);
+  assert.equal(knownLegacyHebrewAlpha('LOONBK+Advhadasa_b'), 15);
+  assert.equal(knownLegacyHebrewAlpha('LOONBJ+Advhadasa_n'), 27);
+  assert.equal(knownLegacyHebrewAlpha('Advvilna-b'), undefined);
 
   assert.equal(LETTER_ORDER.length, 27);
   assert.equal(LETTER_ORDER[0], 'א');
