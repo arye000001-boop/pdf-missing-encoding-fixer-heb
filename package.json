@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "smoke": "node scripts/smoke.mjs",
-    "test": "node scripts/test-tag-decode.mjs && node scripts/test-cmap.mjs"
+    "test": "node scripts/test-tag-decode.mjs && node scripts/test-cmap.mjs && node scripts/test-cid-map.mjs"
   },
   "dependencies": {
     "mupdf": "^1.27.0"
