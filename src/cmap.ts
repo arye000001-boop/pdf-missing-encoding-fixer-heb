@@ -119,6 +119,24 @@ export function parseEncodingCMap(source: string): EncodingCMap {
     }
   }
 
+  if (codeSpaces.length === 0) {
+    throw new Error('Encoding CMap has no codespacerange');
+  }
+
+  // A source code must belong to a declared code-space range of the same
+  // byte length. Without this check, malformed or ambiguous entries could be
+  // written into ToUnicode and silently change text extraction.
+  for (const key of codeToCid.keys()) {
+    const [lengthText, valueText] = key.split(':');
+    const byteLength = Number(lengthText);
+    const code = Number(valueText);
+    if (!codeSpaces.some((range) =>
+      range.byteLength === byteLength && code >= range.low && code <= range.high
+    )) {
+      throw new Error('CMap CID mapping is outside every declared codespacerange');
+    }
+  }
+
   return { codeSpaces, codeToCid, maxCodeBytes, identity: false };
 }
 
