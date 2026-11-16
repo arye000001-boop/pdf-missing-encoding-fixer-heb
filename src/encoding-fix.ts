@@ -88,7 +88,7 @@ export function fixPdfEncoding(
           : null;
         if (!encoding && encodingObj?.isStream()) {
           const cmapBytes = encodingObj.readStream();
-          encoding = parseEncodingCMap(new TextDecoder('latin1').decode(new Uint8Array(cmapBytes)));
+          encoding = parseEncodingCMap(new TextDecoder('latin1').decode(Uint8Array.from(cmapBytes as unknown as Iterable<number>)));
         }
         if (!encoding) continue;
 
@@ -104,7 +104,7 @@ export function fixPdfEncoding(
         if (cidToGidObj?.isName()) {
           if (cidToGidObj.asName() !== 'Identity') continue;
         } else if (cidToGidObj?.isStream()) {
-          cidToGid = parseCidToGidMap(new Uint8Array(cidToGidObj.readStream()));
+          cidToGid = parseCidToGidMap(Uint8Array.from(cidToGidObj.readStream() as unknown as Iterable<number>));
         }
         const table = buildType0HebrewMap(encoding, cidToGid, alpha);
         if (table.size > 0) targets.push({ objNum: i, name, kind: 'type0', table });
