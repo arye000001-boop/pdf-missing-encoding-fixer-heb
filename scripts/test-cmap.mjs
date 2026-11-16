@@ -9,7 +9,7 @@ await build({
   bundle: true, format: 'esm', platform: 'node', outfile: bundle, logLevel: 'error',
 });
 try {
-  const { parseEncodingCMap, identityEncodingCMap } = await import(pathToFileURL(bundle).href);
+  const { parseEncodingCMap, identityEncodingCMap, encodingCodeKey } = await import(pathToFileURL(bundle).href);
   const cmap = parseEncodingCMap(`
     % two-byte source codes
     2 begincodespacerange
@@ -29,10 +29,21 @@ try {
     { low: 33024, high: 33279, byteLength: 2 },
   ]);
   assert.equal(cmap.maxCodeBytes, 2);
-  assert.equal(cmap.codeToCid.get(1), 42);
-  assert.equal(cmap.codeToCid.get(0x8102), 900);
-  assert.equal(cmap.codeToCid.get(0x10), 100);
-  assert.equal(cmap.codeToCid.get(0x12), 102);
+  assert.equal(cmap.codeToCid.get(encodingCodeKey(1, 2)), 42);
+  assert.equal(cmap.codeToCid.get(encodingCodeKey(0x8102, 2)), 900);
+  assert.equal(cmap.codeToCid.get(encodingCodeKey(0x10, 2)), 100);
+  assert.equal(cmap.codeToCid.get(encodingCodeKey(0x12, 2)), 102);
+
+  // Identical numeric values with different source-code lengths must not collide.
+  const mixedLength = parseEncodingCMap(`
+    2 begincidchar
+      <01> 7
+      <0001> 99
+    endcidchar
+  `);
+  assert.equal(mixedLength.codeToCid.get(encodingCodeKey(1, 1)), 7);
+  assert.equal(mixedLength.codeToCid.get(encodingCodeKey(1, 2)), 99);
+  assert.equal(mixedLength.codeToCid.size, 2);
   assert.deepEqual(identityEncodingCMap('Identity-H')?.codeSpaces, [
     { low: 0, high: 65535, byteLength: 2 },
   ]);
