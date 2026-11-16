@@ -24,6 +24,20 @@ export function normalizeFontName(name: string): string {
   return name.replace(/^[A-Z]{6}\+/, '');
 }
 
+/**
+ * Verified GID bases for legacy Adv subsets whose Hebrew alphabet occupies
+ * a fixed contiguous glyph window. These are only used after the PDF probe
+ * confirms every GID in the 27-slot window is present.
+ */
+export function knownLegacyHebrewAlpha(name: string): number | undefined {
+  const key = normalizeFontName(name);
+  if (/Advfrank-n$/i.test(key)) return 27;
+  if (/Advfrank-b$/i.test(key)) return 14;
+  if (/Advhadasa_b$/i.test(key)) return 15;
+  if (/Advhadasa_n$/i.test(key)) return 27;
+  return undefined;
+}
+
 /** 27 glyph slots: 22 letters + 5 finals, final-before-regular, ending at ת. */
 export const LETTER_ORDER = Array.from('אבגדהוזחטיךכלםמןנסעףפץצקרשת');
 const LETTER_INDEX: Record<string, number> = Object.fromEntries(
