@@ -2,6 +2,7 @@ import * as mupdf from 'mupdf';
 import { decodeGid, normalizeFontName, fixHebrewBracketMappings } from './tag-decode';
 import { buildHebrewNameCodeMap, buildTagFontDecoders, decodeCp1255Glyph } from './textmap';
 import { identityEncodingCMap, parseEncodingCMap } from './cmap';
+import { shapeDecodeFont, shapeFill } from './shape-decode';
 import { buildType0HebrewMap, buildVariableToUnicodeCMap, parseCidToGidMap } from './cid-map';
 
 export interface EncodingFixProgress {
@@ -58,6 +59,7 @@ export function fixPdfEncoding(
     | { objNum: number; name: string; kind: 'named'; table: Map<number, string> }
     | { objNum: number; name: string; kind: 'lost'; alpha: number }
     | { objNum: number; name: string; kind: 'cp1255' }
+    | { objNum: number; name: string; kind: 'shape' }
     | { objNum: number; name: string; kind: 'type0'; table: Map<string, string> };
   const targets: Target[] = [];
   const objCount = doc.countObjects();
@@ -130,6 +132,8 @@ export function fixPdfEncoding(
     if (alpha !== undefined) targets.push({ objNum: i, name, kind: 'lost', alpha });
     else if (decoders.cp1255.has(fontKey))
       targets.push({ objNum: i, name, kind: 'cp1255' });
+    else if (hasEmbeddedProgram(o) && !LATIN_FONT.test(name))
+      targets.push({ objNum: i, name, kind: 'shape' });
   }
 
   const fixedFonts: string[] = [];
@@ -166,10 +170,13 @@ export function fixPdfEncoding(
     // Recover this dictionary's code→glyph map by probing, then decode each
     // glyph according to the font's regime: GID-alphabet for `lost`, codepage
     // lookup on mupdf's mojibake unicode for `cp1255`.
-    const glyphs = probeFontGlyphs(doc, target.objNum);
-    if (glyphs.length !== 256) continue;
-    const table = new Map<number, string>();
-    for (let code = 0; code < 256; code++) {
+    let table = new Map<number, string>();
+    let glyphs: { gid: number; uni: number }[] = [];
+    if (target.kind !== 'shape') {
+      glyphs = probeFontGlyphs(doc, target.objNum);
+      if (glyphs.length !== 256) continue;
+    }
+    for (let code = 0; code < 256 && target.kind !== 'shape'; code++) {
       const { gid, uni } = glyphs[code];
       const ch =
         target.kind === 'lost'
@@ -178,6 +185,15 @@ export function fixPdfEncoding(
             ? '' // unused code slot — no glyph
             : decodeCp1255Glyph(normalizeFontName(target.name), uni);
       if (ch) table.set(code, ch);
+    }
+    // Rules found too little Hebrew (or none applies): classify glyph shapes.
+    const hebCount = [...table.values()].filter((c) => /[\u05d0-\u05ea]/.test(c)).length;
+    if (target.kind === 'shape' || hebCount < 6) {
+      const shaped = shapeDecodeFont(doc, target.objNum);
+      if (shaped) table = shaped;
+      else if (target.kind === 'shape') continue;
+    } else {
+      shapeFill(doc, target.objNum, table);
     }
     if (table.size === 0) continue;
     // Preserve valid punctuation/Latin mappings from an incomplete existing
@@ -215,6 +231,16 @@ export function fixPdfEncoding(
  * or a Type3 CharProc throws), then removes the probe page so the document is
  * unchanged.
  */
+const LATIN_FONT = /(times|arial|helvet|courier|calibri|cambria|symbol|zapf|wingding|verdana|tahoma|georgia|palatino|garamond|century|consolas|segoe|lucida|trebuchet|comic|impact|dingbat|math)/i;
+
+/** True if the font dictionary points at an embedded font program. */
+function hasEmbeddedProgram(font: mupdf.PDFObject): boolean {
+  const fd = font.get('FontDescriptor');
+  if (!fd || fd.isNull()) return false;
+  const d = fd.resolve();
+  return ['FontFile', 'FontFile2', 'FontFile3'].some((k) => { const v = d.get(k); return !!v && !v.isNull(); });
+}
+
 function probeFontGlyphs(
   doc: mupdf.PDFDocument,
   fontObjNum: number,
