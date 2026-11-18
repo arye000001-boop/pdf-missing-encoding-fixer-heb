@@ -28,21 +28,25 @@ try {
   assert.equal(knownLegacyHebrewAlpha('LOONKM+Advviloldii'), 21);
   assert.equal(knownLegacyHebrewAlpha('Advvilna-b'), undefined);
 
-  // Legacy Hebrew fonts store parenthesis glyphs in visual order. Correct
-  // only verified Hebrew font families; leave unrelated fonts untouched.
+  // Legacy Hebrew fonts store parenthesis glyphs in visual order. 'chrome' mode (default) keeps the
+  // glyph-shape mapping (PDFium mirrors itself); 'raw' mode stores the mirrored logical character
+  // (pdf.js / poppler / MuPDF read the stream unmirrored). Only repaired fonts are ever passed in.
   const brackets = new Map([[0x28, '('], [0x29, ')'], [0x2c, ',']]);
   fixHebrewBracketMappings('LOOMOH+Advfrank-n', brackets, 'WinAnsiEncoding');
+  assert.equal(brackets.get(0x28), '(');
+  assert.equal(brackets.get(0x29), ')');
+  fixHebrewBracketMappings('LOOMOH+Advfrank-n', brackets, 'WinAnsiEncoding', 'raw');
   assert.equal(brackets.get(0x28), ')');
   assert.equal(brackets.get(0x29), '(');
   assert.equal(brackets.get(0x2c), ',');
   const omittedBrackets = new Map([[0x42, 'א']]);
-  fixHebrewBracketMappings('Advfrank-b', omittedBrackets, 'WinAnsiEncoding');
+  fixHebrewBracketMappings('Advfrank-b', omittedBrackets, 'WinAnsiEncoding', 'raw');
   assert.equal(omittedBrackets.get(0x28), ')');
   assert.equal(omittedBrackets.get(0x29), '(');
-  const unrelated = new Map([[0x28, '('], [0x29, ')']]);
-  fixHebrewBracketMappings('TimesNewRoman', unrelated, 'WinAnsiEncoding');
-  assert.equal(unrelated.get(0x28), '(');
-  assert.equal(unrelated.get(0x29), ')');
+  const hadassah = new Map([[0x28, '('], [0x29, ')'], [0x5b, '['], [0x5d, ']']]);
+  fixHebrewBracketMappings('Hadassah', hadassah, undefined, 'raw');
+  assert.equal(hadassah.get(0x28), ')');
+  assert.equal(hadassah.get(0x5b), ']');
 
   assert.equal(LETTER_ORDER.length, 27);
   assert.equal(LETTER_ORDER[0], 'א');
