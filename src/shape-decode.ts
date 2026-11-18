@@ -194,7 +194,7 @@ export function shapeFill(doc: mupdf.PDFDocument, fontObjNum: number, table: Map
   let added = 0;
   for (const [code, letter] of shaped) {
     const cur = table.get(code);
-    if (cur && /[\u05d0-\u05ea0-9.,;:!?()\[\]'"\-\u2013\u2014 ]/.test(cur)) continue;
+    if (cur && /[\u0591-\u05ea0-9.,;:!?()\[\]'"\-\u2013\u2014 ]/.test(cur)) continue; // never overwrite Hebrew letters, nikud/taamim, digits or punctuation
     table.set(code, letter);
     added++;
   }
