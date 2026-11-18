@@ -132,7 +132,7 @@ export function probeShapes(doc: mupdf.PDFDocument, fontObjNum: number): ShapeGl
       if (!f) continue;
       const { letter, kmax } = classify(f);
       const hEm = f[403] / 2, wEm = (f[400] / 2) * hEm;
-      out.push({ code: c, letter, kmax, gid: gids.length === 256 ? gids[c] : -1, letterLike: hEm >= 0.4 && wEm >= 0.18 });
+      out.push({ code: c, letter, kmax, gid: gids.length === 256 ? gids[c] : -1, letterLike: (hEm >= 0.4 && wEm >= 0.18) || kmax >= 0.88 }); // narrow letters (vav, yod, final nun) fail the size test but match very closely
     }
     pix.destroy();
   } catch {
@@ -184,8 +184,13 @@ export function shapeDecodeFont(doc: mupdf.PDFDocument, fontObjNum: number): Map
  * punctuation are never overwritten.
  */
 export function shapeFill(doc: mupdf.PDFDocument, fontObjNum: number, table: Map<number, string>): number {
-  const shaped = shapeDecodeFont(doc, fontObjNum);
-  if (!shaped) return 0;
+  const g = probeShapes(doc, fontObjNum);
+  if (!g) return 0;
+  // The font is already known to be Hebrew (other rules decoded part of it), so a glyph that is letter-shaped
+  // and reasonably close to a trained letter is accepted even in small subsets.
+  const known = [...table.values()].filter((c) => /[\u05d0-\u05ea]/.test(c)).length;
+  const shaped = new Map<number, string>(shapeDecodeFont(doc, fontObjNum) ?? []);
+  if (known >= 3) for (const x of g) if (x.letterLike && x.kmax >= 0.7 && !shaped.has(x.code)) shaped.set(x.code, x.letter);
   let added = 0;
   for (const [code, letter] of shaped) {
     const cur = table.get(code);

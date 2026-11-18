@@ -150,6 +150,7 @@ export function fixPdfEncoding(
         continue;
       }
       for (const [code, letter] of target.table) merged.set(code, letter);
+      shapeFill(doc, target.objNum, merged); // letter variants whose glyph name carries no Hebrew meaning
       const fontObj = doc.newIndirect(target.objNum).resolve();
       const encodingObj = fontObj.get('Encoding');
       const baseEncoding = encodingObj?.isName() ? encodingObj.asName() : undefined;
