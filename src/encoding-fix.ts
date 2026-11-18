@@ -1,5 +1,5 @@
 import * as mupdf from 'mupdf';
-import { decodeGid, normalizeFontName, fixHebrewBracketMappings } from './tag-decode';
+import { decodeGid, normalizeFontName, fixHebrewBracketMappings, type BracketMode } from './tag-decode';
 import { buildHebrewNameCodeMap, buildTagFontDecoders, decodeCp1255Glyph } from './textmap';
 import { identityEncodingCMap, parseEncodingCMap } from './cmap';
 import { shapeDecodeFont, shapeFill } from './shape-decode';
@@ -39,7 +39,7 @@ const SIMPLE_SUBTYPES = new Set(['Type1', 'TrueType', 'Type3', 'MMType1']);
  */
 export function fixPdfEncoding(
   srcBytes: Uint8Array,
-  opts?: { onProgress?: (p: EncodingFixProgress) => void },
+  opts?: { onProgress?: (p: EncodingFixProgress) => void; bracketMode?: BracketMode },
 ): EncodingFixResult {
   const doc = mupdf.Document.openDocument(srcBytes, 'application/pdf').asPDF();
   if (!doc) throw new Error('Not a PDF');
@@ -153,7 +153,7 @@ export function fixPdfEncoding(
       const fontObj = doc.newIndirect(target.objNum).resolve();
       const encodingObj = fontObj.get('Encoding');
       const baseEncoding = encodingObj?.isName() ? encodingObj.asName() : undefined;
-      fixHebrewBracketMappings(target.name, merged, baseEncoding);
+      fixHebrewBracketMappings(target.name, merged, baseEncoding, opts?.bracketMode ?? 'chrome');
       const cmap = buildToUnicodeCMap(merged);
       const stream = doc.addStream(cmap, doc.newDictionary());
       doc.newIndirect(target.objNum).put('ToUnicode', stream);
@@ -209,7 +209,7 @@ export function fixPdfEncoding(
     const fontObj = doc.newIndirect(target.objNum).resolve();
     const encodingObj = fontObj.get('Encoding');
     const baseEncoding = encodingObj?.isName() ? encodingObj.asName() : undefined;
-    fixHebrewBracketMappings(target.name, merged, baseEncoding);
+    fixHebrewBracketMappings(target.name, merged, baseEncoding, opts?.bracketMode ?? 'chrome');
     const cmap = buildToUnicodeCMap(merged);
     const stream = doc.addStream(cmap, doc.newDictionary());
     doc.newIndirect(target.objNum).put('ToUnicode', stream);

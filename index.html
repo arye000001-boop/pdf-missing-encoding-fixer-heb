@@ -41,6 +41,12 @@
       <input id="folder" type="file" accept="application/pdf" multiple hidden />
     </div>
 
+    <p class="muted"><label>העתקה מ:
+      <select id="viewer">
+        <option value="chrome" selected>Chrome / Edge</option>
+        <option value="raw">Firefox / Evince / Okular / MuPDF</option>
+      </select></label>
+      — הדפדפנים והתוכנות שונים זה מזה בטיפול בסוגריים בטקסט עברי; בחרו את זו שבה תעתיקו.</p>
     <progress id="bar" max="100" value="0" hidden></progress>
     <div id="log">הכל מתבצע במחשב שלכם בלבד — שום קובץ לא נשלח לשרת.</div>
     <div id="out"></div>

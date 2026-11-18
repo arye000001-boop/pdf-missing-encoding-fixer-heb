@@ -107,6 +107,7 @@ async function fixOnePdf(
   const { bytes, fixedFonts } = fixPdfEncoding(
     new Uint8Array(await job.file.arrayBuffer()),
     {
+      bracketMode: (document.getElementById('viewer') as HTMLSelectElement | null)?.value === 'raw' ? 'raw' : 'chrome',
       onProgress: ({ font, fontCount, name }) => {
         const fileProgress = fontCount === 0 ? 1 : font / fontCount;
         bar.value = Math.round(((index + fileProgress) / total) * 100);

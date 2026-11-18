@@ -29,6 +29,7 @@ rmSync(bundle, { force: true });
 
 console.log('fixing', input);
 const { bytes, fixedFonts } = fixPdfEncoding(new Uint8Array(readFileSync(input)), {
+  bracketMode: process.env.BRACKET === 'raw' ? 'raw' : 'chrome',
   onProgress: ({ font, fontCount, name }) => {
     if (font === 1 || font === fontCount) console.log(`  font ${font}/${fontCount} ${name}`);
   },

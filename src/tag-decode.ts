@@ -29,18 +29,29 @@ export function normalizeFontName(name: string): string {
  * therefore need mirrored Unicode destinations for logical RTL extraction.
  * Keep this narrowly scoped to the verified Adv Hebrew font families.
  */
+export type BracketMode = 'chrome' | 'raw';
+
+/**
+ * Legacy Hebrew fonts draw RTL text from a visual-order stream, so the glyph shaped ")" sits where the
+ * logical "(" belongs. Viewers disagree on what to do with that:
+ *  - 'chrome' (default): keep the glyph-shape mapping. Chrome / Edge (PDFium) mirror brackets themselves
+ *    while reordering RTL runs, so this copies correctly there.
+ *  - 'raw': store the mirrored (logical) character. Firefox (pdf.js), poppler/Evince/Okular and MuPDF read
+ *    the stream in order without mirroring, so this copies correctly there (and wrongly in Chrome).
+ * Measured on the maintainer's sample books; see bench/.
+ */
 export function fixHebrewBracketMappings(
   fontName: string,
   mappings: Map<number, string>,
   baseEncoding?: string,
+  mode: BracketMode = 'chrome',
 ): void {
+  if (mode !== 'raw') return;
   const key = normalizeFontName(fontName);
-  if (!/^Adv(?:frank|vilna|viloldii|hadasa|miryam|narkis)/i.test(key)) return;
-
-  for (const [code, value] of mappings) {
-    if (value === '(') mappings.set(code, ')');
-    else if (value === ')') mappings.set(code, '(');
-  }
+  const adv = /^Adv(?:frank|vilna|viloldii|hadasa|miryam|narkis)/i.test(key);
+  const pairs: Record<string, string> = { '(': ')', ')': '(', '[': ']', ']': '[' };
+  for (const [code, value] of mappings) if (pairs[value]) mappings.set(code, pairs[value]);
+  if (!adv) return;
 
   // AdvFrank subsets use WinAnsiEncoding; the legacy PDF may omit these
   // ordinary punctuation entries from ToUnicode altogether.
