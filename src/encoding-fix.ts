@@ -2,7 +2,8 @@ import * as mupdf from 'mupdf';
 import { decodeGid, normalizeFontName, fixHebrewBracketMappings, type BracketMode } from './tag-decode';
 import { buildHebrewNameCodeMap, buildTagFontDecoders, decodeCp1255Glyph } from './textmap';
 import { identityEncodingCMap, parseEncodingCMap } from './cmap';
-import { shapeDecodeFont, shapeFill } from './shape-decode';
+import { shapeDecodeFont, shapeFill, setUserGlyphs, collectReview, type UserGlyph, type ReviewItem } from './shape-decode';
+export type { UserGlyph, ReviewItem } from './shape-decode';
 import { buildType0HebrewMap, buildVariableToUnicodeCMap, parseCidToGidMap } from './cid-map';
 
 export interface EncodingFixProgress {
@@ -16,6 +17,8 @@ export interface EncodingFixResult {
   bytes: Uint8Array;
   /** Font names whose ToUnicode CMap was (re)written. */
   fixedFonts: string[];
+  /** Glyphs of Hebrew fonts that still map to non-Hebrew text, for manual labelling. */
+  review: ReviewItem[];
 }
 
 /** Simple (single-byte, code→glyph) font subtypes the probe handles. */
@@ -39,7 +42,7 @@ const SIMPLE_SUBTYPES = new Set(['Type1', 'TrueType', 'Type3', 'MMType1']);
  */
 export function fixPdfEncoding(
   srcBytes: Uint8Array,
-  opts?: { onProgress?: (p: EncodingFixProgress) => void; bracketMode?: BracketMode },
+  opts?: { onProgress?: (p: EncodingFixProgress) => void; bracketMode?: BracketMode; userGlyphs?: UserGlyph[] },
 ): EncodingFixResult {
   const doc = mupdf.Document.openDocument(srcBytes, 'application/pdf').asPDF();
   if (!doc) throw new Error('Not a PDF');
@@ -136,6 +139,18 @@ export function fixPdfEncoding(
       targets.push({ objNum: i, name, kind: 'shape' });
   }
 
+  // A font family proven Hebrew by one subset lets its small subsets (few glyphs) through a looser gate.
+  const hebrewFamilies = new Set<string>();
+  for (const tg of targets) {
+    if (tg.kind === 'shape' && shapeDecodeFont(doc, tg.objNum)) hebrewFamilies.add(normalizeFontName(tg.name));
+    else if (tg.kind !== 'shape' && tg.kind !== 'type0') hebrewFamilies.add(normalizeFontName(tg.name));
+  }
+  const HEB_NAME = /(adv|pft|miryam|narkis|frank|david|vilna|rashi|hadas|keter|nachlieli|guttman|taamey|ezra|sbl|culmus|drugulin|stam)/i;
+  const relaxedFor = (name: string) => hebrewFamilies.has(normalizeFontName(name)) || HEB_NAME.test(name);
+
+  setUserGlyphs(opts?.userGlyphs ?? []);
+  const review: ReviewItem[] = [];
+  const reviewSeen: Float64Array[] = [];
   const fixedFonts: string[] = [];
   for (let t = 0; t < targets.length; t++) {
     const target = targets[t];
@@ -150,10 +165,11 @@ export function fixPdfEncoding(
         continue;
       }
       for (const [code, letter] of target.table) merged.set(code, letter);
-      shapeFill(doc, target.objNum, merged); // letter variants whose glyph name carries no Hebrew meaning
+      shapeFill(doc, target.objNum, merged, relaxedFor(target.name)); // letter variants whose glyph name carries no Hebrew meaning
       const fontObj = doc.newIndirect(target.objNum).resolve();
       const encodingObj = fontObj.get('Encoding');
       const baseEncoding = encodingObj?.isName() ? encodingObj.asName() : undefined;
+      collectReview(doc, target.objNum, merged, target.name, review, reviewSeen);
       fixHebrewBracketMappings(target.name, merged, baseEncoding, opts?.bracketMode ?? 'chrome');
       const cmap = buildToUnicodeCMap(merged);
       const stream = doc.addStream(cmap, doc.newDictionary());
@@ -190,11 +206,11 @@ export function fixPdfEncoding(
     // Rules found too little Hebrew (or none applies): classify glyph shapes.
     const hebCount = [...table.values()].filter((c) => /[\u05d0-\u05ea]/.test(c)).length;
     if (target.kind === 'shape' || hebCount < 6) {
-      const shaped = shapeDecodeFont(doc, target.objNum);
+      const shaped = shapeDecodeFont(doc, target.objNum, relaxedFor(target.name));
       if (shaped) table = shaped;
       else if (target.kind === 'shape') continue;
     } else {
-      shapeFill(doc, target.objNum, table);
+      shapeFill(doc, target.objNum, table, relaxedFor(target.name));
     }
     if (table.size === 0) continue;
     // Preserve valid punctuation/Latin mappings from an incomplete existing
@@ -210,6 +226,7 @@ export function fixPdfEncoding(
     const fontObj = doc.newIndirect(target.objNum).resolve();
     const encodingObj = fontObj.get('Encoding');
     const baseEncoding = encodingObj?.isName() ? encodingObj.asName() : undefined;
+    collectReview(doc, target.objNum, merged, target.name, review, reviewSeen);
     fixHebrewBracketMappings(target.name, merged, baseEncoding, opts?.bracketMode ?? 'chrome');
     const cmap = buildToUnicodeCMap(merged);
     const stream = doc.addStream(cmap, doc.newDictionary());
@@ -221,7 +238,7 @@ export function fixPdfEncoding(
   const bytes = doc
     .saveToBuffer('garbage=2,compress=yes')
     .asUint8Array();
-  return { bytes, fixedFonts };
+  return { bytes, fixedFonts, review };
 }
 
 /**

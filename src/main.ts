@@ -1,4 +1,4 @@
-import { fixPdfEncoding, inspectPdfEncoding } from './encoding-fix';
+import { fixPdfEncoding, inspectPdfEncoding, type ReviewItem, type UserGlyph } from './encoding-fix';
 
 const drop = document.getElementById('drop') as HTMLDivElement;
 const pickFile = document.getElementById('pick-file') as HTMLButtonElement;
@@ -11,6 +11,64 @@ const out = document.getElementById('out') as HTMLDivElement;
 
 folderInput.setAttribute('webkitdirectory', '');
 folderInput.setAttribute('directory', '');
+
+const reviewBox = document.getElementById('review') as HTMLElement;
+const reviewItems = document.getElementById('review-items') as HTMLDivElement;
+const DICT_KEY = 'hebfix.userGlyphs';
+
+function loadUserGlyphs(): UserGlyph[] {
+  try { return JSON.parse(localStorage.getItem(DICT_KEY) ?? '[]') as UserGlyph[]; } catch { return []; }
+}
+function saveUserGlyphs(list: UserGlyph[]) {
+  localStorage.setItem(DICT_KEY, JSON.stringify(list));
+}
+
+let currentReview: ReviewItem[] = [];
+function renderReview(items: ReviewItem[]) {
+  currentReview = items;
+  reviewItems.innerHTML = '';
+  reviewBox.hidden = items.length === 0;
+  items.forEach((it, i) => {
+    const card = document.createElement('div');
+    card.className = 'rv';
+    const cv = document.createElement('canvas');
+    cv.width = 20; cv.height = 20;
+    const ctx = cv.getContext('2d')!;
+    const img = ctx.createImageData(20, 20);
+    for (let k = 0; k < 400; k++) {
+      const v = 255 - it.preview[k];
+      img.data[k * 4] = img.data[k * 4 + 1] = img.data[k * 4 + 2] = v; img.data[k * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    const input = document.createElement('input');
+    input.id = `rv-${i}`; input.value = it.guess; input.dir = 'rtl';
+    const label = document.createElement('div');
+    label.textContent = `${displayFontName(it.font)} · 0x${it.code.toString(16)} · כעת: ${JSON.stringify(it.current)}`;
+    card.append(cv, document.createElement('br'), input, label);
+    reviewItems.append(card);
+  });
+}
+
+document.getElementById('review-save')!.addEventListener('click', () => {
+  const dict = loadUserGlyphs();
+  currentReview.forEach((it, i) => {
+    const v = (document.getElementById(`rv-${i}`) as HTMLInputElement).value;
+    if (v === '') return;
+    dict.push({ f: it.f, text: v });
+  });
+  saveUserGlyphs(dict);
+  void handleJobs(lastJobs, lastPreferZip);
+});
+document.getElementById('dict-export')!.addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(loadUserGlyphs())], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'hebrew-glyph-dictionary.json'; a.click();
+});
+document.getElementById('dict-import')!.addEventListener('click', () => document.getElementById('dict-file')!.click());
+document.getElementById('dict-file')!.addEventListener('change', async (e) => {
+  const f = (e.target as HTMLInputElement).files?.[0]; if (!f) return;
+  try { saveUserGlyphs([...loadUserGlyphs(), ...(JSON.parse(await f.text()) as UserGlyph[])]); say('המילון יובא.'); } catch { say('קובץ מילון לא תקין.'); }
+});
+document.getElementById('dict-reset')!.addEventListener('click', () => { saveUserGlyphs([]); say('המילון אופס.'); });
 
 function say(msg: string) {
   log.textContent = msg;
@@ -36,6 +94,7 @@ type PdfJob = {
 };
 
 type FixedPdf = {
+  review: ReviewItem[];
   outputPath: string;
   bytes: Uint8Array;
   pageCount: number;
@@ -104,9 +163,10 @@ async function fixOnePdf(
 
   // Re-read: mupdf detaches the input buffer it opens, so inspect and fix each
   // take their own copy.
-  const { bytes, fixedFonts } = fixPdfEncoding(
+  const { bytes, fixedFonts, review } = fixPdfEncoding(
     new Uint8Array(await job.file.arrayBuffer()),
     {
+      userGlyphs: loadUserGlyphs(),
       bracketMode: (document.getElementById('viewer') as HTMLSelectElement | null)?.value === 'raw' ? 'raw' : 'chrome',
       onProgress: ({ font, fontCount, name }) => {
         const fileProgress = fontCount === 0 ? 1 : font / fontCount;
@@ -121,6 +181,7 @@ async function fixOnePdf(
 
   bar.value = Math.round(((index + 1) / total) * 100);
   return {
+    review,
     outputPath: outputPath(job.path),
     bytes,
     pageCount: info.pageCount,
@@ -139,8 +200,14 @@ async function handleFiles(files: File[], preferZip = false) {
   await handleJobs(pdfJobs(files), preferZip);
 }
 
+let lastJobs: PdfJob[] = [];
+let lastPreferZip = false;
+
 async function handleJobs(jobs: PdfJob[], preferZip = false) {
+  lastJobs = jobs;
+  lastPreferZip = preferZip;
   out.innerHTML = '';
+  reviewBox.hidden = true;
   if (jobs.length === 0) {
     say('לא נמצאו קבצי PDF לביצוע.');
     return;
@@ -175,6 +242,7 @@ async function handleJobs(jobs: PdfJob[], preferZip = false) {
       );
     }
 
+    renderReview(fixed.flatMap((item) => item.review));
     const fixedFonts = fixed.flatMap((item) => item.fixedFonts);
     const fixedList = compactFontList(fixedFonts, '(אין)');
     const complexFonts = [...new Set(fixed.flatMap((item) =>

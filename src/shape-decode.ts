@@ -77,8 +77,9 @@ function features(ink: Uint8Array, cs: number, em: number): Float64Array | null 
   return f;
 }
 
-export interface ShapeGlyph { code: number; letter: string; text: string; kmax: number; letterLike: boolean; gid: number }
+export interface ShapeGlyph { code: number; letter: string; text: string; kmax: number; letterLike: boolean; gid: number; feat: Float64Array }
 const IS_LETTER = /^[\u05d0-\u05ea]$/;
+const IS_MARK = /^[\u05b0-\u05bd\u05bf\u05c1\u05c2\u05c7]$/;
 /** Similarity at which a glyph is considered an exact dictionary hit (same typeface family seen in training). */
 const EXACT = 0.97;
 
@@ -158,10 +159,11 @@ function probeShapesUncached(doc: mupdf.PDFDocument, fontObjNum: number): ShapeG
       }
       const f = features(cell, cs, em);
       if (!f) continue;
-      const { letter, kmax } = classify(f);
+      const um = userMatch(f);
+      const { letter, kmax } = um !== null ? { letter: um, kmax: 1 } : classify(f);
       const hEm = f[403] / 2, wEm = (f[400] / 2) * hEm;
       const isL = IS_LETTER.test(letter);
-      out.push({ code: c, letter, text: letter, kmax, gid: gids.length === 256 ? gids[c] : -1, letterLike: isL && ((hEm >= 0.4 && wEm >= 0.18) || kmax >= 0.88) }); // narrow letters (vav, yod, final nun) fail the size test but match very closely
+      out.push({ code: c, letter, text: letter, kmax, gid: gids.length === 256 ? gids[c] : -1, feat: f, letterLike: isL && ((hEm >= 0.4 && wEm >= 0.18) || kmax >= 0.88) }); // narrow letters (vav, yod, final nun) fail the size test but match very closely
     }
     pix.destroy();
   } catch {
@@ -179,23 +181,34 @@ function probeShapesUncached(doc: mupdf.PDFDocument, fontObjNum: number): ShapeG
  * "Hebrew" = at least 12 distinct letters recognised with very high similarity;
  * Latin glyphs essentially never reach that level.
  */
-export function shapeDecodeFont(doc: mupdf.PDFDocument, fontObjNum: number): Map<number, string> | null {
+export function shapeDecodeFont(doc: mupdf.PDFDocument, fontObjNum: number, relaxed = false): Map<number, string> | null {
   const g = probeShapes(doc, fontObjNum);
   if (!g) return null;
   const strong = g.filter((x) => x.letterLike && x.kmax >= 0.92);
-  if (strong.length < 12 || new Set(strong.map((x) => x.letter)).size < 12) return null;
-  // Legacy fonts keep the alphabet in glyph order (finals before regulars): snap to a consistent run.
-  const snap = (key: 'code' | 'gid') => {
+  // A small subset of a font family already proven Hebrew elsewhere in the file (or with a Hebrew-typeface name)
+  // only has to show a few letters.
+  const need = relaxed ? 4 : 12;
+  const ok = strong.length >= need && new Set(strong.map((x) => x.letter)).size >= need;
+  // Legacy fonts keep the alphabet in glyph order (finals before regulars). Several letters landing on one
+  // consistent code/gid offset is a structural proof of a Hebrew alphabet font, even for a tiny subset whose
+  // glyphs match the trained shapes only loosely.
+  const snapOf = (items: ShapeGlyph[], key: 'code' | 'gid') => {
     const votes = new Map<number, number>();
-    for (const x of strong) { const i = ALPHA.indexOf(x.letter); if (i >= 0 && x[key] >= 0) { const d = x[key] - i; votes.set(d, (votes.get(d) ?? 0) + 1); } }
+    for (const x of items) { const i = ALPHA.indexOf(x.letter); if (i >= 0 && x[key] >= 0) { const d = x[key] - i; votes.set(d, (votes.get(d) ?? 0) + 1); } }
     let bd = 0, bv = 0; for (const [d, v] of votes) if (v > bv) { bd = d; bv = v; }
-    return { d: bd, support: bv / strong.length };
+    return { d: bd, support: items.length ? bv / items.length : 0, n: bv };
   };
+  const cand = g.filter((x) => IS_LETTER.test(x.text) && x.kmax >= 0.6);
+  const cc = snapOf(cand, 'code'), cg = snapOf(cand, 'gid');
+  const structural = cand.length >= 6 && Math.max(cc.support, cg.support) >= 0.8 && Math.max(cc.n, cg.n) >= 6;
+  if (!ok && !structural) return null;
+  const pool = ok ? strong : cand;
+  const snap = (key: 'code' | 'gid') => snapOf(pool, key);
   const sc = snap('code'), sg = snap('gid');
   const useKey: 'code' | 'gid' | null = Math.max(sc.support, sg.support) >= 0.6 ? (sc.support >= sg.support ? 'code' : 'gid') : null;
   const d = useKey === 'code' ? sc.d : sg.d;
   const table = new Map<number, string>();
-  for (const x of strong) table.set(x.code, x.letter);
+  for (const x of pool) table.set(x.code, x.letter);
   for (const x of g) if (x.kmax >= EXACT && !IS_LETTER.test(x.text)) table.set(x.code, x.text); // nikud, dagesh/vowel composites, digits, punctuation
   if (useKey) {
     // inside the alphabet window every glyph with a plausible letter shape is that letter (even if the
@@ -213,18 +226,26 @@ export function shapeDecodeFont(doc: mupdf.PDFDocument, fontObjNum: number): Map
  * characters (e.g. letter variants with a dagesh) from the shape table. Existing Hebrew letters, digits and
  * punctuation are never overwritten.
  */
-export function shapeFill(doc: mupdf.PDFDocument, fontObjNum: number, table: Map<number, string>): number {
+export function shapeFill(doc: mupdf.PDFDocument, fontObjNum: number, table: Map<number, string>, relaxed = false): number {
   const g = probeShapes(doc, fontObjNum);
   if (!g) return 0;
   // The font is already known to be Hebrew (other rules decoded part of it), so a glyph that is letter-shaped
   // and reasonably close to a trained letter is accepted even in small subsets.
   const known = [...table.values()].filter((c) => /[\u05d0-\u05ea]/.test(c)).length;
-  const shaped = new Map<number, string>(shapeDecodeFont(doc, fontObjNum) ?? []);
+  const shaped = new Map<number, string>(shapeDecodeFont(doc, fontObjNum, relaxed) ?? []);
   if (known >= 3) for (const x of g) if (x.letterLike && x.kmax >= 0.7 && !shaped.has(x.code)) shaped.set(x.code, x.letter);
   let added = 0;
   const exact = new Map<number, string>();
-  if (known >= 3 || shaped.size >= 12) for (const x of g) if (x.kmax >= EXACT) exact.set(x.code, x.text);
+  if (known >= 3 || shaped.size >= (relaxed ? 4 : 12)) for (const x of g) if (x.kmax >= EXACT) exact.set(x.code, x.text);
   for (const [code, text] of exact) { if (table.get(code) !== text) { table.set(code, text); added++; } } // exact dictionary hit beats rule-based guesses
+  // nikud: small dots/bars are less distinctive, so accept a looser match, but only where the code is garbage
+  const IS_COMPOSITE = /^[\u05d0-\u05ea][\u05b0-\u05c7]+$/;
+  for (const x of g) {
+    const known3 = known >= 3 || shaped.size >= (relaxed ? 4 : 12);
+    if (exact.has(x.code) || x.kmax < 0.75 || !(IS_MARK.test(x.text) || (known3 && (IS_COMPOSITE.test(x.text) || IS_LETTER.test(x.text))))) continue;
+    const cur = table.get(x.code);
+    if (!cur || !/[\u0591-\u05ea0-9.,;:!?()\[\]'"\-\u2013\u2014 ]/.test(cur)) { table.set(x.code, x.text); added++; }
+  }
   for (const [code, letter] of shaped) {
     if (exact.has(code)) continue;
     const cur = table.get(code);
@@ -233,4 +254,61 @@ export function shapeFill(doc: mupdf.PDFDocument, fontObjNum: number, table: Map
     added++;
   }
   return added;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// User dictionary: glyphs the maintainer labelled by hand (shape features -> text). They are exact hits.
+
+export interface UserGlyph { f: string; text: string }
+let USER: { f: Float64Array; text: string }[] = [];
+
+export function encodeFeatures(f: Float64Array): string {
+  const u = new Uint8Array(f.length);
+  for (let i = 0; i < f.length; i++) u[i] = Math.max(0, Math.min(255, Math.round(((f[i] + 2) / 8) * 255)));
+  let bin = ''; for (const b of u) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+function decodeFeatures(b64: string): Float64Array {
+  const bin = atob(b64); const f = new Float64Array(bin.length);
+  for (let i = 0; i < bin.length; i++) f[i] = (bin.charCodeAt(i) / 255) * 8 - 2;
+  return f;
+}
+export function setUserGlyphs(list: UserGlyph[]): void {
+  USER = list.filter((u) => u.f && u.text !== undefined).map((u) => ({ f: decodeFeatures(u.f), text: u.text }));
+}
+function userMatch(f: Float64Array): string | null {
+  let best = 0, text: string | null = null;
+  for (const u of USER) {
+    if (u.f.length !== f.length) continue;
+    let d = 0; for (let i = 0; i < f.length; i++) { const e = u.f[i] - f[i]; d += e * e; }
+    const k = Math.exp(-M.gamma * d);
+    if (k > best) { best = k; text = u.text; }
+  }
+  return best >= EXACT ? text : null;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Review list: glyphs of Hebrew fonts that still map to something that is not Hebrew/digit/punctuation.
+
+export interface ReviewItem { font: string; code: number; current: string; guess: string; kmax: number; f: string; preview: number[] }
+const VALID = /^[\u0591-\u05f4\u200e\u200f0-9.,;:!?()\[\]'"\-\u2013\u2014\u2018-\u201f\u2022 /%*+=<>&\u20aa]+$/;
+
+export function collectReview(doc: mupdf.PDFDocument, fontObjNum: number, table: Map<number, string>, fontName: string, out: ReviewItem[], seen: Float64Array[]): void {
+  const g = probeShapes(doc, fontObjNum);
+  if (!g) return;
+  for (const x of g) {
+    const cur = table.get(x.code);
+    // no entry at all: the code keeps its original (usually fine) mapping, so it is not a problem to review
+    if (cur === undefined || cur === '' || VALID.test(cur)) continue;
+    let dup = false;
+    for (const f of seen) {
+      let d = 0; for (let i = 0; i < f.length; i++) { const e = f[i] - x.feat[i]; d += e * e; }
+      if (Math.exp(-M.gamma * d) >= EXACT) { dup = true; break; }
+    }
+    if (dup || out.length >= 80) continue;
+    seen.push(x.feat);
+    const preview: number[] = [];
+    for (let i = 0; i < 400; i++) preview.push(Math.round(Math.max(0, Math.min(1, x.feat[i])) * 255));
+    out.push({ font: fontName, code: x.code, current: cur, guess: x.kmax >= 0.5 ? x.text : cur, kmax: x.kmax, f: encodeFeatures(x.feat), preview });
+  }
 }
