@@ -1,13 +1,14 @@
 name: Ingest glyph corrections
 on:
   issues:
-    types: [opened, edited, labeled]
+    types: [opened, edited]
 permissions:
   contents: write
   issues: write
 jobs:
   ingest:
     if: contains(github.event.issue.labels.*.name, 'glyph-corrections')
+    concurrency: { group: ingest-glyphs, cancel-in-progress: false }
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +27,8 @@ jobs:
           mkdir -p /tmp/p && cp pending/*.json /tmp/p/
           if git ls-remote --exit-code origin community-glyphs >/dev/null 2>&1; then git fetch origin community-glyphs && git checkout -f community-glyphs; else git checkout --orphan community-glyphs && git rm -rf . >/dev/null 2>&1 || true; fi
           mkdir -p pending && cp /tmp/p/*.json pending/
-          git add pending && git commit -m "Glyph corrections from issue #${{ github.event.issue.number }}" && git push origin community-glyphs
+          git add pending
+          if git diff --cached --quiet; then echo "nothing new"; else git commit -m "Glyph corrections from issue #${{ github.event.issue.number }}"; git pull --rebase origin community-glyphs 2>/dev/null || true; git push origin community-glyphs; fi
       - name: Thank the contributor
         env: { GH_TOKEN: "${{ github.token }}" }
         run: gh issue comment ${{ github.event.issue.number }} --body "התיקונים נקלטו בענף community-glyphs (תיקיית pending) וימתינו לבדיקה לפני שייכנסו למילון הראשי."
