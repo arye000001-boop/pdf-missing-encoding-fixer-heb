@@ -1,4 +1,4 @@
-import { fixPdfEncoding, inspectPdfEncoding } from './encoding-fix';
+import { fixPdfEncoding, inspectPdfEncoding, type ReviewItem, type UserGlyph } from './encoding-fix';
 
 const drop = document.getElementById('drop') as HTMLDivElement;
 const pickFile = document.getElementById('pick-file') as HTMLButtonElement;
@@ -11,6 +11,94 @@ const out = document.getElementById('out') as HTMLDivElement;
 
 folderInput.setAttribute('webkitdirectory', '');
 folderInput.setAttribute('directory', '');
+
+const reviewBox = document.getElementById('review') as HTMLElement;
+const reviewItems = document.getElementById('review-items') as HTMLDivElement;
+const DICT_KEY = 'hebfix.userGlyphs';
+
+function loadUserGlyphs(): UserGlyph[] {
+  try { return JSON.parse(localStorage.getItem(DICT_KEY) ?? '[]') as UserGlyph[]; } catch { return []; }
+}
+function saveUserGlyphs(list: UserGlyph[]) {
+  localStorage.setItem(DICT_KEY, JSON.stringify(list));
+}
+
+let currentReview: ReviewItem[] = [];
+function renderReview(items: ReviewItem[], skipped: { name: string; glyphs: number }[]) {
+  currentReview = items;
+  reviewItems.innerHTML = '';
+  reviewBox.hidden = items.length === 0 && skipped.length === 0;
+  const groups: [string, string, ReviewItem[]][] = [
+    ['לא פוענחו', 'גליפים בפונטים עבריים שעדיין ממופים לתו לא עברי. הקלידו את התו הנכון.', items.filter((i) => i.kind === 'unresolved')],
+    ['ניחושים לוודא', 'הכלי זיהה אותם לפי הצורה אך אינו בטוח לגמרי. אם התו הנוכחי נכון — השאירו; אם לא — תקנו.', items.filter((i) => i.kind === 'guess')],
+  ];
+  for (const [title, hint, list] of groups) {
+    if (!list.length) continue;
+    const h = document.createElement('h3'); h.textContent = `${title} (${list.length})`;
+    const p = document.createElement('p'); p.className = 'muted'; p.textContent = hint;
+    const grid = document.createElement('div'); grid.className = 'rv-grid';
+    list.forEach((it) => {
+      const i = items.indexOf(it);
+      const card = document.createElement('div'); card.className = 'rv';
+      const cv = document.createElement('canvas'); cv.width = it.thumbSize; cv.height = it.thumbSize;
+      const ctx = cv.getContext('2d')!;
+      const img = ctx.createImageData(it.thumbSize, it.thumbSize);
+      for (let k = 0; k < it.thumbSize * it.thumbSize; k++) { const v = it.thumb[k]; img.data[k * 4] = img.data[k * 4 + 1] = img.data[k * 4 + 2] = v; img.data[k * 4 + 3] = 255; }
+      ctx.putImageData(img, 0, 0);
+      const base = Math.round(it.thumbSize * (1.15 / 1.6));   // baseline guide
+      ctx.strokeStyle = 'rgba(220,38,38,.6)'; ctx.beginPath(); ctx.moveTo(0, base); ctx.lineTo(it.thumbSize, base); ctx.stroke();
+      const input = document.createElement('input'); input.id = `rv-${i}`; input.value = it.guess; input.dir = 'rtl';
+      const label = document.createElement('div');
+      label.textContent = `${displayFontName(it.font)} · 0x${it.code.toString(16)}\nכעת: ${JSON.stringify(it.current)} · ביטחון ${Math.round(it.kmax * 100)}%`;
+      label.style.whiteSpace = 'pre-line';
+      card.append(cv, document.createElement('br'), input, label); grid.append(card);
+    });
+    if (title.startsWith('ניחושים')) {
+      const det = document.createElement('details'); const sum = document.createElement('summary'); sum.append(h);
+      const all = document.createElement('button'); all.type = 'button'; all.textContent = 'אשרו את כל הניחושים (הם נכונים)';
+      all.addEventListener('click', () => {
+        const dict = loadUserGlyphs();
+        for (const it of list) dict.push({ f: it.f, text: (document.getElementById(`rv-${items.indexOf(it)}`) as HTMLInputElement).value });
+        saveUserGlyphs(dict); void handleJobs(lastJobs, lastPreferZip);
+      });
+      det.append(sum, p, all, grid); reviewItems.append(det);
+    } else reviewItems.append(h, p, grid);
+  }
+  if (skipped.length) {
+    const h = document.createElement('h3'); h.textContent = `פונטים שלא זוהו כעבריים (${skipped.length})`;
+    const p = document.createElement('p'); p.className = 'muted';
+    p.textContent = 'נבדקו ונדחו כי הצורות שבהם אינן דומות מספיק לאותיות עבריות מוכרות: ' + [...new Set(skipped.map((f) => `${displayFontName(f.name)} (${f.glyphs} גליפים)`))].join(', ') + '. אם אחד מהם עברי — שלחו את הקובץ לבדיקה.';
+    reviewItems.append(h, p);
+  }
+}
+
+document.getElementById('review-save')!.addEventListener('click', () => {
+  const dict = loadUserGlyphs();
+  currentReview.forEach((it, i) => {
+    const v = (document.getElementById(`rv-${i}`) as HTMLInputElement).value;
+    if (v === '') return;
+    dict.push({ f: it.f, text: v });
+  });
+  saveUserGlyphs(dict);
+  void handleJobs(lastJobs, lastPreferZip);
+});
+document.getElementById('dict-export')!.addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(loadUserGlyphs())], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'hebrew-glyph-dictionary.json'; a.click();
+});
+document.getElementById('dict-import')!.addEventListener('click', () => document.getElementById('dict-file')!.click());
+document.getElementById('dict-file')!.addEventListener('change', async (e) => {
+  const f = (e.target as HTMLInputElement).files?.[0]; if (!f) return;
+  try { saveUserGlyphs([...loadUserGlyphs(), ...(JSON.parse(await f.text()) as UserGlyph[])]); say('המילון יובא.'); } catch { say('קובץ מילון לא תקין.'); }
+});
+document.getElementById('dict-share')!.addEventListener('click', async () => {
+  const json = JSON.stringify(loadUserGlyphs());
+  const base = 'https://github.com/arye000001-boop/pdf-missing-encoding-fixer-heb/issues/new?template=glyph-corrections.yml';
+  if (json.length < 5500) { window.open(`${base}&json=${encodeURIComponent(json)}`, '_blank'); return; }
+  try { await navigator.clipboard.writeText(json); say('המילון הועתק ללוח. הדביקו אותו בטופס שייפתח.'); } catch { say('הורידו את המילון בכפתור "ייצוא מילון" והדביקו את תוכנו בטופס.'); }
+  window.open(base, '_blank');
+});
+document.getElementById('dict-reset')!.addEventListener('click', () => { saveUserGlyphs([]); say('המילון אופס.'); });
 
 function say(msg: string) {
   log.textContent = msg;
@@ -36,10 +124,13 @@ type PdfJob = {
 };
 
 type FixedPdf = {
+  review: ReviewItem[];
+  skippedFonts: { name: string; glyphs: number }[];
   outputPath: string;
   bytes: Uint8Array;
   pageCount: number;
   fixedFonts: string[];
+  complexFonts: string[];
   lastModified: number;
 };
 
@@ -103,9 +194,11 @@ async function fixOnePdf(
 
   // Re-read: mupdf detaches the input buffer it opens, so inspect and fix each
   // take their own copy.
-  const { bytes, fixedFonts } = fixPdfEncoding(
+  const { bytes, fixedFonts, review, skippedFonts } = fixPdfEncoding(
     new Uint8Array(await job.file.arrayBuffer()),
     {
+      userGlyphs: loadUserGlyphs(),
+      bracketMode: (document.getElementById('viewer') as HTMLSelectElement | null)?.value === 'raw' ? 'raw' : 'chrome',
       onProgress: ({ font, fontCount, name }) => {
         const fileProgress = fontCount === 0 ? 1 : font / fontCount;
         bar.value = Math.round(((index + fileProgress) / total) * 100);
@@ -119,10 +212,13 @@ async function fixOnePdf(
 
   bar.value = Math.round(((index + 1) / total) * 100);
   return {
+    review,
+    skippedFonts,
     outputPath: outputPath(job.path),
     bytes,
     pageCount: info.pageCount,
     fixedFonts,
+    complexFonts: info.complexFonts,
     lastModified: job.file.lastModified,
   };
 }
@@ -136,8 +232,14 @@ async function handleFiles(files: File[], preferZip = false) {
   await handleJobs(pdfJobs(files), preferZip);
 }
 
+let lastJobs: PdfJob[] = [];
+let lastPreferZip = false;
+
 async function handleJobs(jobs: PdfJob[], preferZip = false) {
+  lastJobs = jobs;
+  lastPreferZip = preferZip;
   out.innerHTML = '';
+  reviewBox.hidden = true;
   if (jobs.length === 0) {
     say('לא נמצאו קבצי PDF לביצוע.');
     return;
@@ -172,12 +274,25 @@ async function handleJobs(jobs: PdfJob[], preferZip = false) {
       );
     }
 
+    renderReview(fixed.flatMap((item) => item.review), fixed.flatMap((item) => item.skippedFonts));
     const fixedFonts = fixed.flatMap((item) => item.fixedFonts);
     const fixedList = compactFontList(fixedFonts, '(אין)');
+    const complexFonts = [...new Set(fixed.flatMap((item) =>
+      item.complexFonts.filter((font) =>
+        !item.fixedFonts.some((fixedName) =>
+          displayFontName(fixedName) === displayFontName(font),
+        ),
+      ),
+    ))];
+    const complexList = compactFontList(complexFonts, '(אין)');
     const pages = fixed.reduce((sum, item) => sum + item.pageCount, 0);
     say(
-      `הסתיים. ${fixed.length} קבצים, ${pages} עמודים.\n` +
-        `פונטים שתוקנו: ${fixedList}`,
+      `הסתיים. ${fixed.length} קבצים, ${pages} עמודים.\\n` +
+        `פונטים שתוקנו: ${fixedList}\\n` +
+        `גופני Type0/CID שלא תוקנו: ${complexList}\\n` +
+        (complexFonts.length
+          ? 'שים לב: נותרו גופני Type0/CID שלא תוקנו; יש לבדוק אותם בנפרד.'
+          : 'לא זוהו גופני Type0/CID במסמך.'),
     );
   } catch (e) {
     say(`שגיאה: ${e instanceof Error ? e.message : String(e)}`);

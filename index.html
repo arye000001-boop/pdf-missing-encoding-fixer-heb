@@ -24,6 +24,10 @@
              background: #2563eb; color: #fff; text-decoration: none; font-weight: 600; }
       .muted { opacity: .65; font-size: .85rem; }
       progress { width: 100%; }
+      .rv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .8rem; margin: .8rem 0; }
+      .rv { border: 1px solid rgba(127,127,127,.4); border-radius: 8px; padding: .5rem; text-align: center; font-size: .75rem; }
+      .rv canvas { width: 160px; height: 160px; background: #fff; border-radius: 4px; }
+      .rv input { width: 5rem; text-align: center; font-size: 1.4rem; margin: .3rem 0; }
     </style>
   </head>
   <body>
@@ -41,9 +45,30 @@
       <input id="folder" type="file" accept="application/pdf" multiple hidden />
     </div>
 
+    <p class="muted"><label>העתקה מ:
+      <select id="viewer">
+        <option value="chrome" selected>Chrome / Edge</option>
+        <option value="raw">Firefox / Evince / Okular / MuPDF</option>
+      </select></label>
+      — הדפדפנים והתוכנות שונים זה מזה בטיפול בסוגריים בטקסט עברי; בחרו את זו שבה תעתיקו.</p>
     <progress id="bar" max="100" value="0" hidden></progress>
     <div id="log">הכל מתבצע במחשב שלכם בלבד — שום קובץ לא נשלח לשרת.</div>
     <div id="out"></div>
+
+    <section id="review" hidden>
+      <h2>גליפים לבדיקה</h2>
+      <p class="muted">אלה גליפים בפונטים העבריים שעדיין לא ממופים לתו עברי. הקלידו את התו הנכון (ריק = להתעלם,
+        השארת התו הנוכחי = הוא נכון, למשל אנגלית). לחיצה על "שמור והמר שוב" שומרת במילון שלכם (במחשב הזה) ומריצה שוב.</p>
+      <div id="review-items"></div>
+      <div class="actions">
+        <button id="review-save" class="primary" type="button">שמור והמר שוב</button>
+        <button id="dict-export" type="button">ייצוא מילון</button>
+        <button id="dict-import" type="button">ייבוא מילון</button>
+        <button id="dict-reset" type="button">איפוס מילון</button>
+        <button id="dict-share" type="button">שלחו את התיקונים לשיפור הכלי</button>
+        <input id="dict-file" type="file" accept="application/json" hidden />
+      </div>
+    </section>
 
     <p class="muted" dir="ltr">All processing runs locally in your browser (mupdf‑wasm). Nothing is uploaded.
       Repairs the character→Unicode mapping of legacy Hebrew fonts in place — the original

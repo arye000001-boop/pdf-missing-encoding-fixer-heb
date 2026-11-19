@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: pdf-hebrew-encoding-fixer-preview
+    runtime: static
+    plan: free
+    branch: fix/hebrew-extraction-and-rtl
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    autoDeployTrigger: checksPass

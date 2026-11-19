@@ -68,17 +68,35 @@ npm run build      # production build into dist/
 
 ## Deploy (GitHub Pages)
 
-Push to `master`. The included workflow builds with
+Push to `fix/hebrew-extraction-and-rtl` for the preview site (or `master` for the main site). The included workflow builds with
 `VITE_BASE=/pdf-missing-encoding-fixer-heb/` (the repo name, so asset paths
 resolve under the project Pages URL) and publishes `dist/` to Pages. Enable
 Pages → "GitHub Actions" in the repo settings once.
 
 ## Limitations
 
+- **Type0 / CIDFont support is currently limited to CIDFontType2.** The fixer
+  handles predefined Identity-H/V and explicit Encoding CMaps, then resolves
+  CID values through an Identity or stream-based CIDToGIDMap. It only writes a
+  ToUnicode map when the font's Hebrew GID alphabet calibration is trusted.
+  CIDFontType0/CFF descendants, unsupported CMap operators, and ambiguous
+  mappings are left untouched and reported rather than guessed.
 - Fonts with **no consistent glyph identity** (e.g. some Type3 vector fonts)
-  can't be decoded deterministically.
-- **Anchorless** lost fonts rely on the `maxGid - 26` guess; if their highest
-  glyph isn't ת, some glyphs may not be recovered and keep their original
-  (broken) text. The page still renders identically.
-- Pure-ASCII-encoded Hebrew fonts that show no broken-mapping signal are left
-  untouched, to avoid corrupting legitimate Latin text.
+  cannot be decoded deterministically.
+- Legacy Adv* fonts without a validated family calibration are left untouched
+  rather than decoded using an unsafe `maxGid - 26` guess.
+- Pure-ASCII-encoded Hebrew fonts that show no broken-mapping signal may remain
+  untouched until their font-specific encoding is identified.
+- The app reports detected Type0/CID fonts after processing so a user is not
+  led to believe that such a document was fully repaired.
+
+## Offline use, quality report and community dictionary
+
+* **Offline batch:** `npm install && npx tsx scripts/cli.mjs <folder|file.pdf> --out fixed/ [--viewer chrome|raw] [--dict my-dictionary.json]`
+  fixes whole libraries locally (no network); `npm run build && npx vite preview` serves the same page locally.
+* **Review panel (web page):** after each conversion the page lists glyphs that are still non-Hebrew ("לא פוענחו"), glyphs that were
+  only recognised by shape ("ניחושים"), and fonts that were rejected as non-Hebrew. Labels are stored per browser and applied to every later book.
+* **Community dictionary:** "שלחו את התיקונים" opens an issue (label `glyph-corrections`); `.github/workflows/ingest-glyphs.yml` stores the
+  validated entries in `pending/` on branch `community-glyphs`. Maintainer: check that branch out as a folder and run
+  `node scripts/merge-glyphs.mjs <folder>/pending` (add `--write` to append non-conflicting entries seen by >= 2 contributors, or `--all`)
+  to update `src/default-glyphs.json`, which ships with every build.

@@ -16,6 +16,66 @@
  * across the sample corpus.
  */
 
+/** Remove the six-uppercase-letter subset prefix used in PDF /BaseFont names.
+ * MuPDF's runtime font name normally omits this prefix; PDF dictionaries keep it.
+ * Normalizing both sides is essential when joining per-font calibration results.
+ */
+export function normalizeFontName(name: string): string {
+  return name.replace(/^[A-Z]{6}\+/, '');
+}
+
+/**
+ * Hebrew legacy fonts are laid out in visual order. Their parenthesis glyphs
+ * therefore need mirrored Unicode destinations for logical RTL extraction.
+ * Keep this narrowly scoped to the verified Adv Hebrew font families.
+ */
+export type BracketMode = 'chrome' | 'raw';
+
+/**
+ * Legacy Hebrew fonts draw RTL text from a visual-order stream, so the glyph shaped ")" sits where the
+ * logical "(" belongs. Viewers disagree on what to do with that:
+ *  - 'chrome' (default): keep the glyph-shape mapping. Chrome / Edge (PDFium) mirror brackets themselves
+ *    while reordering RTL runs, so this copies correctly there.
+ *  - 'raw': store the mirrored (logical) character. Firefox (pdf.js), poppler/Evince/Okular and MuPDF read
+ *    the stream in order without mirroring, so this copies correctly there (and wrongly in Chrome).
+ * Measured on the maintainer's sample books; see bench/.
+ */
+export function fixHebrewBracketMappings(
+  fontName: string,
+  mappings: Map<number, string>,
+  baseEncoding?: string,
+  mode: BracketMode = 'chrome',
+): void {
+  if (mode !== 'raw') return;
+  const key = normalizeFontName(fontName);
+  const adv = /^Adv(?:frank|vilna|viloldii|hadasa|miryam|narkis)/i.test(key);
+  const pairs: Record<string, string> = { '(': ')', ')': '(', '[': ']', ']': '[' };
+  for (const [code, value] of mappings) if (pairs[value]) mappings.set(code, pairs[value]);
+  if (!adv) return;
+
+  // AdvFrank subsets use WinAnsiEncoding; the legacy PDF may omit these
+  // ordinary punctuation entries from ToUnicode altogether.
+  if (baseEncoding === 'WinAnsiEncoding') {
+    if (!mappings.has(0x28)) mappings.set(0x28, ')');
+    if (!mappings.has(0x29)) mappings.set(0x29, '(');
+  }
+}
+
+/**
+ * Verified GID bases for legacy Adv subsets whose Hebrew alphabet occupies
+ * a fixed contiguous glyph window. These are only used after the PDF probe
+ * confirms every GID in the 27-slot window is present.
+ */
+export function knownLegacyHebrewAlpha(name: string): number | undefined {
+  const key = normalizeFontName(name);
+  if (/Advfrank-n$/i.test(key)) return 27;
+  if (/Advfrank-b$/i.test(key)) return 14;
+  if (/Advhadasa_b$/i.test(key)) return 15;
+  if (/Advhadasa_n$/i.test(key)) return 27;
+  if (/Advviloldii$/i.test(key)) return 21;
+  return undefined;
+}
+
 /** 27 glyph slots: 22 letters + 5 finals, final-before-regular, ending at ת. */
 export const LETTER_ORDER = Array.from('אבגדהוזחטיךכלםמןנסעףפץצקרשת');
 const LETTER_INDEX: Record<string, number> = Object.fromEntries(

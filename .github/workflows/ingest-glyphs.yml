@@ -1,0 +1,32 @@
+name: Ingest glyph corrections
+on:
+  issues:
+    types: [opened, edited, labeled]
+permissions:
+  contents: write
+  issues: write
+jobs:
+  ingest:
+    if: contains(github.event.issue.labels.*.name, 'glyph-corrections')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: master, fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Parse the issue (data only)
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+        run: node scripts/ingest-glyphs.mjs
+      - name: Commit to the community-glyphs branch
+        run: |
+          git config user.name "glyph-bot"; git config user.email "glyph-bot@users.noreply.github.com"
+          mkdir -p /tmp/p && cp pending/*.json /tmp/p/
+          if git ls-remote --exit-code origin community-glyphs >/dev/null 2>&1; then git fetch origin community-glyphs && git checkout -f community-glyphs; else git checkout --orphan community-glyphs && git rm -rf . >/dev/null 2>&1 || true; fi
+          mkdir -p pending && cp /tmp/p/*.json pending/
+          git add pending && git commit -m "Glyph corrections from issue #${{ github.event.issue.number }}" && git push origin community-glyphs
+      - name: Thank the contributor
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh issue comment ${{ github.event.issue.number }} --body "התיקונים נקלטו בענף community-glyphs (תיקיית pending) וימתינו לבדיקה לפני שייכנסו למילון הראשי."

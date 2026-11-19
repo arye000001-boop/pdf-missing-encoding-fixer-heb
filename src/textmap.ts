@@ -4,6 +4,8 @@ import {
   anchorAlpha,
   classifyFontRegime,
   decodeGid,
+  normalizeFontName,
+  knownLegacyHebrewAlpha,
   type FontGlyphStats,
   solveAlphaFromVotes,
 } from './tag-decode';
@@ -804,6 +806,18 @@ const GLYPH_NAME_TO_HEBREW: Record<string, string> = {
   shinhebrew: 'ש',
   tav: 'ת',
   tavhebrew: 'ת',
+  // Legacy Adv* subset fonts also use Adobe Latin glyph names as
+  // stable Hebrew-letter aliases. These are the same anchor slots used by
+  // LATIN_ANCHOR in tag-decode.ts, but resolving them here lets us build a
+  // direct source-code → Unicode map from /Encoding /Differences.
+  AE: 'ב',
+  ae: 'ס',
+  Lslash: 'ט',
+  lslash: 'ר',
+  Oslash: 'י',
+  oslash: 'ש',
+  OE: 'ך',
+  oe: 'ת',
   // MacRoman glyph names interpreted as Mac OS Hebrew bytes.
   daggerdbl: 'א',
   periodcentered: 'ב',
@@ -902,7 +916,21 @@ function isBiblicalTranslitEncoding(names: string[]): boolean {
 }
 
 export function decodeHebrewGlyphName(name: string): string | undefined {
-  return GLYPH_NAME_TO_HEBREW[name];
+  const direct = GLYPH_NAME_TO_HEBREW[name];
+  if (direct !== undefined) return direct;
+
+  // Some Advvilna / Advnarkis / Advhadasa CFF subsets name their Hebrew
+  // glyphs C224, C226, ... where the decimal suffix is the original
+  // Windows-1255 byte (224 = 0xE0 = alef). This is a glyph-name encoding,
+  // not a GID-order assumption, and remains valid for sparse subsets.
+  const cp1255Name = /^C(\d{3})$/.exec(name);
+  if (cp1255Name) {
+    const byte = Number(cp1255Name[1]);
+    if (byte >= 0xe0 && byte <= 0xfa) {
+      return String.fromCodePoint(0x05d0 + byte - 0xe0);
+    }
+  }
+  return undefined;
 }
 
 export function buildHebrewNameCodeMap(fontObj: mupdf.PDFObject): Map<number, string> {
@@ -950,6 +978,18 @@ const fontNameOf = (font: mupdf.Font | null | undefined): string =>
 
 const SIMPLE_FONT_SUBTYPES = new Set(['Type1', 'TrueType', 'Type3', 'MMType1']);
 
+function toUnicodeContainsHebrew(fontObj: mupdf.PDFObject): boolean {
+  try {
+    const stream = fontObj.get('ToUnicode');
+    if (!stream || stream.isNull() || !stream.isStream()) return false;
+    const source = new TextDecoder('latin1').decode(stream.readStream().asUint8Array());
+    // Hebrew destinations in UTF-16BE are U+05D0–U+05EA.
+    return /05D[0-9A-F]|05E[0-A]/i.test(source);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Run a page through a no-op rendering device purely to observe each glyph's
  * font, glyph-id, mupdf-unicode and on-page origin — the glyph-id is the only
@@ -979,7 +1019,7 @@ function forEachGlyph(
         const py = trm[5];
         const x = ctm[0] * px + ctm[2] * py + ctm[4];
         const y = ctm[1] * px + ctm[3] * py + ctm[5];
-        cb(fontNameOf(font), gid, unicode || 0, x, y);
+        cb(normalizeFontName(fontNameOf(font)), gid, unicode || 0, x, y);
       },
     });
   };
@@ -1080,6 +1120,17 @@ export function buildTagFontDecoders(
   }
 
   const namedGlyphs = new Map<string, Map<number, string>>();
+  // Several older Adv* Hebrew fonts use ordinary WinAnsi byte codes for
+  // Hebrew-shaped glyphs but ship without /ToUnicode. MuPDF consequently
+  // reports ASCII Latin letters (A-Z), so the generic Unicode-distribution
+  // classifier cannot distinguish them from real English. Restrict this
+  // fallback to known Hebrew font families AND missing /ToUnicode, then
+  // calibrate from the complete 256-code font probe rather than page samples.
+  const legacyLost = new Map<string, AlphaResult>();
+  // Recognized legacy Hebrew families must never fall through to the generic
+  // maxGid-26 heuristic when their per-family calibration is unavailable.
+  // A false positive here would write a plausible but incorrect ToUnicode map.
+  const legacyUnresolved = new Set<string>();
   const objCount = doc.countObjects();
   for (let i = 1; i < objCount; i++) {
     let o: mupdf.PDFObject;
@@ -1094,16 +1145,72 @@ export function buildTagFontDecoders(
     const sub = o.get('Subtype');
     if (!sub || !sub.isName() || !SIMPLE_FONT_SUBTYPES.has(sub.asName())) continue;
     const bf = o.get('BaseFont');
+    // PDF dictionaries keep the six-letter subset prefix (e.g. ABCDEF+Font),
+    // while MuPDF's showGlyph/font.getName() reports the underlying name.
+    // All scan maps are keyed by the runtime name, so normalize before joining.
     const name = bf && bf.isName() ? bf.asName() : '';
-    if (!stats.has(name)) continue;
+    const fontKey = normalizeFontName(name);
+    if (!stats.has(fontKey)) continue;
+
+    const toUnicode = o.get('ToUnicode');
+    const hasToUnicode = !!toUnicode && !toUnicode.isNull();
+    const isKnownLegacyHebrewFont =
+      /Adv(?:frank|vilna|viloldii|hadasa|miryam|narkis)/i.test(fontKey);
+    const knownAlpha = knownLegacyHebrewAlpha(fontKey);
+    const needsLegacyRecovery =
+      isKnownLegacyHebrewFont &&
+      (!hasToUnicode || (knownAlpha !== undefined && !toUnicodeContainsHebrew(o)));
+    if (needsLegacyRecovery) {
+      // Default to unresolved; clear this only after a verified calibration.
+      legacyUnresolved.add(fontKey);
+      const probe = probeFontGlyphs(doc, i);
+      if (probe.length === 256) {
+        const realGids = probe.map((g) => g.gid).filter((gid) => gid > 0);
+        const distinctGids = new Set(realGids);
+        const probeMaxGid = realGids.length > 0 ? Math.max(...realGids) : 0;
+        // AdvFrank / AdvHadasa CFF subsets append punctuation and
+        // alternate glyphs AFTER the Hebrew alphabet. Therefore maxGid-26
+        // is not a valid base offset for these fonts.
+        // Use a family-specific window only when all 27 glyph IDs are
+        // present in the probe; otherwise leave the font untouched.
+        if (
+          knownAlpha !== undefined &&
+          Array.from({ length: 27 }, (_, i) => knownAlpha + i).every((gid) =>
+            distinctGids.has(gid),
+          )
+        ) {
+          legacyLost.set(fontKey, { alpha: knownAlpha, confident: true });
+          legacyUnresolved.delete(fontKey);
+        } else if (
+          knownAlpha === undefined &&
+          distinctGids.size >= 27 &&
+          probeMaxGid >= 26
+        ) {
+          // For other Adv* families, accept only a unanimous anchor-derived
+          // offset. solveAlphaFromVotes otherwise falls back to maxGid-26,
+          // which is known to be unsafe for CFF fonts with trailing glyphs.
+          const anchored = solveAlphaFromVotes(
+            votes.get(fontKey) ?? new Map(),
+            probeMaxGid,
+          );
+          if (anchored.confident) {
+            legacyLost.set(fontKey, anchored);
+            legacyUnresolved.delete(fontKey);
+          }
+        } else {
+          legacyUnresolved.add(fontKey);
+        }
+      }
+    }
+
     const codeMap = buildHebrewNameCodeMap(o);
     if (codeMap.size < 3) continue;
     const glyphs = probeFontGlyphs(doc, i);
     if (glyphs.length !== 256) continue;
-    let glyphMap = namedGlyphs.get(name);
+    let glyphMap = namedGlyphs.get(fontKey);
     if (!glyphMap) {
       glyphMap = new Map();
-      namedGlyphs.set(name, glyphMap);
+      namedGlyphs.set(fontKey, glyphMap);
     }
     for (const [code, ch] of codeMap) {
       const gid = glyphs[code]?.gid ?? 0;
@@ -1111,10 +1218,10 @@ export function buildTagFontDecoders(
     }
   }
 
-  const lost = new Map<string, AlphaResult>();
+  const lost = new Map<string, AlphaResult>(legacyLost);
   const cp1255 = new Set<string>();
   for (const [font, s] of stats) {
-    if (namedGlyphs.has(font)) continue;
+    if (namedGlyphs.has(font) || lost.has(font) || legacyUnresolved.has(font)) continue;
     const regime = classifyFontRegime(s);
     if (regime === 'cp1255') {
       cp1255.add(font);
@@ -1218,7 +1325,7 @@ function walkStructuredText(
       if (typeof size === 'number' && size > 0 && size < 2) return;
       const h = quadYMax(quad) - quadYMin(quad);
       if (h > 0 && h < 1) return;
-      const fontName = fontNameOf(font);
+      const fontName = normalizeFontName(fontNameOf(font));
       const named = decoders?.namedGlyphs.get(fontName);
       if (named && lostGlyphs) {
         const g = lostGlyphs.get(`${fontName}|${originKey(origin[0], origin[1])}`);

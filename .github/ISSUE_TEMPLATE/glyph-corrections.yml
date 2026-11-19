@@ -1,0 +1,17 @@
+name: תיקוני גליפים (מילון)
+description: שליחת תיקונים שסימנתם בלוח "גליפים לבדיקה" כדי שיצורפו למילון הראשי
+title: "תיקוני גליפים"
+labels: ["glyph-corrections"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        הדביקו כאן את תוכן המילון שיוצא מהכפתור "ייצוא מילון" (מערך JSON). התיקונים נקלטים אוטומטית לתיקיית `pending`
+        ונבדקים לפני שהם נכנסים למילון הראשי. אל תצרפו קבצי PDF שיש בהם מידע פרטי.
+  - type: textarea
+    id: json
+    attributes:
+      label: מילון (JSON)
+      description: מערך של אובייקטים {"f": "...", "text": "..."}
+    validations:
+      required: true

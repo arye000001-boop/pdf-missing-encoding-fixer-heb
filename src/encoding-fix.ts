@@ -1,6 +1,10 @@
 import * as mupdf from 'mupdf';
-import { decodeGid } from './tag-decode';
+import { decodeGid, normalizeFontName, fixHebrewBracketMappings, type BracketMode } from './tag-decode';
 import { buildHebrewNameCodeMap, buildTagFontDecoders, decodeCp1255Glyph } from './textmap';
+import { identityEncodingCMap, parseEncodingCMap } from './cmap';
+import { shapeDecodeFont, shapeFill, probeShapes, setUserGlyphs, collectReview, type UserGlyph, type ReviewItem } from './shape-decode';
+export type { UserGlyph, ReviewItem } from './shape-decode';
+import { buildType0HebrewMap, buildVariableToUnicodeCMap, parseCidToGidMap } from './cid-map';
 
 export interface EncodingFixProgress {
   font: number;
@@ -13,6 +17,10 @@ export interface EncodingFixResult {
   bytes: Uint8Array;
   /** Font names whose ToUnicode CMap was (re)written. */
   fixedFonts: string[];
+  /** Glyphs of Hebrew fonts that still map to non-Hebrew text, or were only guessed, for manual labelling. */
+  review: ReviewItem[];
+  /** Embedded fonts that were examined but not accepted as Hebrew (name + glyph count). */
+  skippedFonts: { name: string; glyphs: number }[];
 }
 
 /** Simple (single-byte, code→glyph) font subtypes the probe handles. */
@@ -36,7 +44,7 @@ const SIMPLE_SUBTYPES = new Set(['Type1', 'TrueType', 'Type3', 'MMType1']);
  */
 export function fixPdfEncoding(
   srcBytes: Uint8Array,
-  opts?: { onProgress?: (p: EncodingFixProgress) => void },
+  opts?: { onProgress?: (p: EncodingFixProgress) => void; bracketMode?: BracketMode; userGlyphs?: UserGlyph[] },
 ): EncodingFixResult {
   const doc = mupdf.Document.openDocument(srcBytes, 'application/pdf').asPDF();
   if (!doc) throw new Error('Not a PDF');
@@ -45,7 +53,7 @@ export function fixPdfEncoding(
   // `alpha` is a property of the embedded font program, keyed by PostScript
   // name (what the render device reports and what `/BaseFont` carries).
   const alphaByName = new Map(
-    [...decoders.lost].map(([name, r]) => [name, r.alpha]),
+    [...decoders.lost].map(([name, r]) => [normalizeFontName(name), r.alpha]),
   );
 
   // Collect the target font dictionaries first: probing mutates the page tree
@@ -55,7 +63,9 @@ export function fixPdfEncoding(
   type Target =
     | { objNum: number; name: string; kind: 'named'; table: Map<number, string> }
     | { objNum: number; name: string; kind: 'lost'; alpha: number }
-    | { objNum: number; name: string; kind: 'cp1255' };
+    | { objNum: number; name: string; kind: 'cp1255' }
+    | { objNum: number; name: string; kind: 'shape' }
+    | { objNum: number; name: string; kind: 'type0'; table: Map<string, string> };
   const targets: Target[] = [];
   const objCount = doc.countObjects();
   for (let i = 1; i < objCount; i++) {
@@ -69,27 +79,109 @@ export function fixPdfEncoding(
     const type = o.get('Type');
     if (!type || !type.isName() || type.asName() !== 'Font') continue;
     const sub = o.get('Subtype');
-    if (!sub || !sub.isName() || !SIMPLE_SUBTYPES.has(sub.asName())) continue;
+    if (!sub || !sub.isName()) continue;
     const bf = o.get('BaseFont');
     const name = bf && bf.isName() ? bf.asName() : '';
+
+    // Type0 support is deliberately limited to CIDFontType2, whose
+    // CIDToGIDMap is specified by PDF as Identity or a two-byte stream.
+    if (sub.asName() === 'Type0') {
+      // Preserve existing maps until all supported ToUnicode operators can
+      // be merged without dropping source mappings.
+      const existingToUnicode = o.get('ToUnicode');
+      if (existingToUnicode && !existingToUnicode.isNull()) continue;
+      const fontKey = normalizeFontName(name);
+      const alpha = alphaByName.get(fontKey);
+      if (alpha === undefined) continue;
+      try {
+        const encodingObj = o.get('Encoding');
+        let encoding = encodingObj?.isName()
+          ? identityEncodingCMap(encodingObj.asName())
+          : null;
+        if (!encoding && encodingObj?.isStream()) {
+          const cmapBytes = encodingObj.readStream();
+          encoding = parseEncodingCMap(new TextDecoder('latin1').decode(cmapBytes.asUint8Array()));
+        }
+        if (!encoding) continue;
+
+        const descendants = o.get('DescendantFonts');
+        if (!descendants?.isArray() || descendants.length < 1) continue;
+        const descendant = descendants.get(0).resolve();
+        if (!descendant?.isDictionary()) continue;
+        const descendantSubtype = descendant.get('Subtype');
+        if (!descendantSubtype?.isName() || descendantSubtype.asName() !== 'CIDFontType2') continue;
+
+        const cidToGidObj = descendant.get('CIDToGIDMap');
+        let cidToGid: Map<number, number> | null = null;
+        if (cidToGidObj?.isName()) {
+          if (cidToGidObj.asName() !== 'Identity') continue;
+        } else if (cidToGidObj?.isStream()) {
+          cidToGid = parseCidToGidMap(cidToGidObj.readStream().asUint8Array());
+        }
+        const table = buildType0HebrewMap(encoding, cidToGid, alpha);
+        if (table.size > 0) targets.push({ objNum: i, name, kind: 'type0', table });
+      } catch {
+        // Unsupported or malformed CMaps are left untouched; never guess.
+      }
+      continue;
+    }
+
+    if (!SIMPLE_SUBTYPES.has(sub.asName())) continue;
     const namedTable = buildHebrewNameCodeMap(o);
     if (namedTable.size >= 3) {
       targets.push({ objNum: i, name, kind: 'named', table: namedTable });
       continue;
     }
-    const alpha = alphaByName.get(name);
+    const fontKey = normalizeFontName(name);
+    const alpha = alphaByName.get(fontKey);
     if (alpha !== undefined) targets.push({ objNum: i, name, kind: 'lost', alpha });
-    else if (decoders.cp1255.has(name))
+    else if (decoders.cp1255.has(fontKey))
       targets.push({ objNum: i, name, kind: 'cp1255' });
+    else if (hasEmbeddedProgram(o) && !LATIN_FONT.test(name))
+      targets.push({ objNum: i, name, kind: 'shape' });
   }
 
+  // A font family proven Hebrew by one subset lets its small subsets (few glyphs) through a looser gate.
+  const hebrewFamilies = new Set<string>();
+  for (const tg of targets) {
+    if (tg.kind === 'shape' && shapeDecodeFont(doc, tg.objNum)) hebrewFamilies.add(normalizeFontName(tg.name));
+    else if (tg.kind !== 'shape' && tg.kind !== 'type0') hebrewFamilies.add(normalizeFontName(tg.name));
+  }
+  const HEB_NAME = /(adv|pft|miryam|narkis|frank|david|vilna|rashi|hadas|keter|nachlieli|guttman|taamey|ezra|sbl|culmus|drugulin|stam)/i;
+  const relaxedFor = (name: string) => hebrewFamilies.has(normalizeFontName(name)) || HEB_NAME.test(name);
+
+  setUserGlyphs(opts?.userGlyphs ?? []);
+  const review: ReviewItem[] = [];
+  const skippedFonts: { name: string; glyphs: number }[] = [];
+  const reviewSeen: Float64Array[] = [];
   const fixedFonts: string[] = [];
   for (let t = 0; t < targets.length; t++) {
     const target = targets[t];
     opts?.onProgress?.({ font: t + 1, fontCount: targets.length, name: target.name });
     if (target.kind === 'named') {
       if (target.table.size === 0) continue;
-      const cmap = buildToUnicodeCMap(target.table);
+      let merged: Map<number, string>;
+      try {
+        merged = readExistingSimpleToUnicode(doc.newIndirect(target.objNum).resolve());
+      } catch {
+        // Do not overwrite a nontrivial CMap we cannot safely preserve.
+        continue;
+      }
+      for (const [code, letter] of target.table) merged.set(code, letter);
+      shapeFill(doc, target.objNum, merged, relaxedFor(target.name)); // letter variants whose glyph name carries no Hebrew meaning
+      const fontObj = doc.newIndirect(target.objNum).resolve();
+      const encodingObj = fontObj.get('Encoding');
+      const baseEncoding = encodingObj?.isName() ? encodingObj.asName() : undefined;
+      collectReview(doc, target.objNum, merged, target.name, review, reviewSeen);
+      fixHebrewBracketMappings(target.name, merged, baseEncoding, opts?.bracketMode ?? 'chrome');
+      const cmap = buildToUnicodeCMap(merged);
+      const stream = doc.addStream(cmap, doc.newDictionary());
+      doc.newIndirect(target.objNum).put('ToUnicode', stream);
+      if (!fixedFonts.includes(target.name)) fixedFonts.push(target.name);
+      continue;
+    }
+    if (target.kind === 'type0') {
+      const cmap = buildVariableToUnicodeCMap(target.table);
       const stream = doc.addStream(cmap, doc.newDictionary());
       doc.newIndirect(target.objNum).put('ToUnicode', stream);
       if (!fixedFonts.includes(target.name)) fixedFonts.push(target.name);
@@ -98,21 +190,48 @@ export function fixPdfEncoding(
     // Recover this dictionary's code→glyph map by probing, then decode each
     // glyph according to the font's regime: GID-alphabet for `lost`, codepage
     // lookup on mupdf's mojibake unicode for `cp1255`.
-    const glyphs = probeFontGlyphs(doc, target.objNum);
-    if (glyphs.length !== 256) continue;
-    const table = new Map<number, string>();
-    for (let code = 0; code < 256; code++) {
+    let table = new Map<number, string>();
+    let glyphs: { gid: number; uni: number }[] = [];
+    if (target.kind !== 'shape') {
+      glyphs = probeFontGlyphs(doc, target.objNum);
+      if (glyphs.length !== 256) continue;
+    }
+    for (let code = 0; code < 256 && target.kind !== 'shape'; code++) {
       const { gid, uni } = glyphs[code];
       const ch =
         target.kind === 'lost'
           ? decodeGid(target.alpha, gid, uni)
           : gid === 0
             ? '' // unused code slot — no glyph
-            : decodeCp1255Glyph(target.name, uni);
+            : decodeCp1255Glyph(normalizeFontName(target.name), uni);
       if (ch) table.set(code, ch);
     }
+    // Rules found too little Hebrew (or none applies): classify glyph shapes.
+    const hebCount = [...table.values()].filter((c) => /[\u05d0-\u05ea]/.test(c)).length;
+    if (target.kind === 'shape' || hebCount < 6) {
+      const shaped = shapeDecodeFont(doc, target.objNum, relaxedFor(target.name));
+      if (shaped) table = shaped;
+      else if (target.kind === 'shape') { const pg = probeShapes(doc, target.objNum); skippedFonts.push({ name: target.name, glyphs: pg?.length ?? 0 }); continue; }
+    } else {
+      shapeFill(doc, target.objNum, table, relaxedFor(target.name));
+    }
     if (table.size === 0) continue;
-    const cmap = buildToUnicodeCMap(table);
+    // Preserve valid punctuation/Latin mappings from an incomplete existing
+    // ToUnicode CMap while overlaying the recovered Hebrew glyph mappings.
+    let merged: Map<number, string>;
+    try {
+      merged = readExistingSimpleToUnicode(doc.newIndirect(target.objNum).resolve());
+    } catch {
+      // Unknown CMap syntax is left untouched rather than partially destroyed.
+      continue;
+    }
+    for (const [code, ch] of table) merged.set(code, ch);
+    const fontObj = doc.newIndirect(target.objNum).resolve();
+    const encodingObj = fontObj.get('Encoding');
+    const baseEncoding = encodingObj?.isName() ? encodingObj.asName() : undefined;
+    collectReview(doc, target.objNum, merged, target.name, review, reviewSeen);
+    fixHebrewBracketMappings(target.name, merged, baseEncoding, opts?.bracketMode ?? 'chrome');
+    const cmap = buildToUnicodeCMap(merged);
     const stream = doc.addStream(cmap, doc.newDictionary());
     doc.newIndirect(target.objNum).put('ToUnicode', stream);
     if (!fixedFonts.includes(target.name)) fixedFonts.push(target.name);
@@ -122,7 +241,7 @@ export function fixPdfEncoding(
   const bytes = doc
     .saveToBuffer('garbage=2,compress=yes')
     .asUint8Array();
-  return { bytes, fixedFonts };
+  return { bytes, fixedFonts, review, skippedFonts };
 }
 
 /**
@@ -133,6 +252,16 @@ export function fixPdfEncoding(
  * or a Type3 CharProc throws), then removes the probe page so the document is
  * unchanged.
  */
+const LATIN_FONT = /(times|arial|helvet|courier|calibri|cambria|symbol|zapf|wingding|verdana|tahoma|georgia|palatino|garamond|century|consolas|segoe|lucida|trebuchet|comic|impact|dingbat|math)/i;
+
+/** True if the font dictionary points at an embedded font program. */
+function hasEmbeddedProgram(font: mupdf.PDFObject): boolean {
+  const fd = font.get('FontDescriptor');
+  if (!fd || fd.isNull()) return false;
+  const d = fd.resolve();
+  return ['FontFile', 'FontFile2', 'FontFile3'].some((k) => { const v = d.get(k); return !!v && !v.isNull(); });
+}
+
 function probeFontGlyphs(
   doc: mupdf.PDFDocument,
   fontObjNum: number,
@@ -189,6 +318,50 @@ function utf16beHex(s: string): string {
  * Serialise a single-byte `code → string` table as a PDF ToUnicode CMap.
  * `bfchar` blocks are capped at 100 entries each, per the spec.
  */
+
+/** Read the existing one-byte ToUnicode mappings so a Hebrew repair does not
+ * erase punctuation, Latin letters, or other valid characters in the font. */
+function readExistingSimpleToUnicode(font: mupdf.PDFObject): Map<number, string> {
+  const result = new Map<number, string>();
+  const obj = font.get('ToUnicode');
+  if (!obj || obj.isNull()) return result;
+  if (!obj.isStream()) throw new Error('Unsupported existing ToUnicode object');
+  const bytes = obj.readStream().asUint8Array();
+  const source = new TextDecoder('latin1').decode(bytes);
+  if (/beginbfrange[\s\S]*?\[[\s\S]*?\]/.test(source)) {
+    throw new Error('Array-form ToUnicode bfrange is not supported for safe merge');
+  }
+  const readHex = (value: string) => value.slice(1, -1).replace(/\s+/g, '');
+  const decodeUtf16 = (hex: string): string => {
+    if (!hex || hex.length % 4 !== 0) throw new Error('Invalid UTF-16 ToUnicode destination');
+    let out = '';
+    for (let i = 0; i < hex.length; i += 4) out += String.fromCharCode(parseInt(hex.slice(i, i + 4), 16));
+    return out;
+  };
+  for (const block of source.matchAll(/\d+\s+beginbfchar([\s\S]*?)endbfchar/g)) {
+    const pairs = [...block[1].matchAll(/(<[0-9A-Fa-f\s]+>)\s*(<[0-9A-Fa-f\s]+>)/g)];
+    for (const pair of pairs) {
+      const src = readHex(pair[1]);
+      if (src.length !== 2) continue;
+      result.set(parseInt(src, 16), decodeUtf16(readHex(pair[2])));
+    }
+  }
+  for (const block of source.matchAll(/\d+\s+beginbfrange([\s\S]*?)endbfrange/g)) {
+    const lines = block[1].match(/<[^>]+>\s*<[^>]+>\s*<[^>]+>/g) ?? [];
+    for (const line of lines) {
+      const parts = [...line.matchAll(/<([^>]+)>/g)].map((m) => m[1].replace(/\s+/g, ''));
+      if (parts.length !== 3 || parts[0].length !== 2 || parts[1].length !== 2) continue;
+      const first = parseInt(parts[0], 16), last = parseInt(parts[1], 16);
+      const dest = parseInt(parts[2], 16);
+      if (last < first || last - first > 255 || !Number.isFinite(dest)) throw new Error('Unsafe ToUnicode bfrange');
+      for (let code = first; code <= last; code++) {
+        result.set(code, String.fromCharCode(dest + code - first));
+      }
+    }
+  }
+  return result;
+}
+
 function buildToUnicodeCMap(table: Map<number, string>): string {
   const entries = [...table.entries()].sort((a, b) => a[0] - b[0]);
   const head =
@@ -222,10 +395,39 @@ function buildToUnicodeCMap(table: Map<number, string>): string {
 export function inspectPdfEncoding(srcBytes: Uint8Array): {
   pageCount: number;
   lostFonts: string[];
+  complexFonts: string[];
 } {
   const doc = mupdf.Document.openDocument(srcBytes, 'application/pdf').asPDF();
   if (!doc) throw new Error('Not a PDF');
   const decoders = buildTagFontDecoders(doc);
+  const complexFonts = new Set<string>();
+  // Type0 fonts use multi-byte character codes and a descendant CIDFont.
+  // The current single-byte probe cannot safely infer their source-code map.
+  // Report them explicitly instead of silently implying the file was fully
+  // inspected or attempting to write a corrupt one-byte ToUnicode CMap.
+  for (let i = 1; i < doc.countObjects(); i++) {
+    let obj: mupdf.PDFObject;
+    try {
+      obj = doc.newIndirect(i).resolve();
+    } catch {
+      continue;
+    }
+    if (!obj || !obj.isDictionary()) continue;
+    const type = obj.get('Type');
+    const subtype = obj.get('Subtype');
+    if (
+      type?.isName() && type.asName() === 'Font' &&
+      subtype?.isName() && subtype.asName() === 'Type0'
+    ) {
+      const baseFont = obj.get('BaseFont');
+      if (baseFont?.isName()) {
+        const rawName = baseFont.asName();
+        complexFonts.add(rawName.split('+').pop() ?? rawName);
+      } else {
+        complexFonts.add(`Type0 font object ${i}`);
+      }
+    }
+  }
   return {
     pageCount: doc.countPages(),
     lostFonts: [
@@ -233,5 +435,6 @@ export function inspectPdfEncoding(srcBytes: Uint8Array): {
       ...decoders.lost.keys(),
       ...decoders.cp1255.keys(),
     ].map((f) => f.split('+').pop() ?? f),
+    complexFonts: [...complexFonts],
   };
 }
