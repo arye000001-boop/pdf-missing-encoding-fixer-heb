@@ -89,3 +89,14 @@ Pages → "GitHub Actions" in the repo settings once.
   untouched until their font-specific encoding is identified.
 - The app reports detected Type0/CID fonts after processing so a user is not
   led to believe that such a document was fully repaired.
+
+## Offline use, quality report and community dictionary
+
+* **Offline batch:** `npm install && npx tsx scripts/cli.mjs <folder|file.pdf> --out fixed/ [--viewer chrome|raw] [--dict my-dictionary.json]`
+  fixes whole libraries locally (no network); `npm run build && npx vite preview` serves the same page locally.
+* **Review panel (web page):** after each conversion the page lists glyphs that are still non-Hebrew ("לא פוענחו"), glyphs that were
+  only recognised by shape ("ניחושים"), and fonts that were rejected as non-Hebrew. Labels are stored per browser and applied to every later book.
+* **Community dictionary:** "שלחו את התיקונים" opens an issue (label `glyph-corrections`); `.github/workflows/ingest-glyphs.yml` stores the
+  validated entries in `pending/` on branch `community-glyphs`. Maintainer: check that branch out as a folder and run
+  `node scripts/merge-glyphs.mjs <folder>/pending` (add `--write` to append non-conflicting entries seen by >= 2 contributors, or `--all`)
+  to update `src/default-glyphs.json`, which ships with every build.

@@ -2,7 +2,7 @@ import * as mupdf from 'mupdf';
 import { decodeGid, normalizeFontName, fixHebrewBracketMappings, type BracketMode } from './tag-decode';
 import { buildHebrewNameCodeMap, buildTagFontDecoders, decodeCp1255Glyph } from './textmap';
 import { identityEncodingCMap, parseEncodingCMap } from './cmap';
-import { shapeDecodeFont, shapeFill, setUserGlyphs, collectReview, type UserGlyph, type ReviewItem } from './shape-decode';
+import { shapeDecodeFont, shapeFill, probeShapes, setUserGlyphs, collectReview, type UserGlyph, type ReviewItem } from './shape-decode';
 export type { UserGlyph, ReviewItem } from './shape-decode';
 import { buildType0HebrewMap, buildVariableToUnicodeCMap, parseCidToGidMap } from './cid-map';
 
@@ -17,8 +17,10 @@ export interface EncodingFixResult {
   bytes: Uint8Array;
   /** Font names whose ToUnicode CMap was (re)written. */
   fixedFonts: string[];
-  /** Glyphs of Hebrew fonts that still map to non-Hebrew text, for manual labelling. */
+  /** Glyphs of Hebrew fonts that still map to non-Hebrew text, or were only guessed, for manual labelling. */
   review: ReviewItem[];
+  /** Embedded fonts that were examined but not accepted as Hebrew (name + glyph count). */
+  skippedFonts: { name: string; glyphs: number }[];
 }
 
 /** Simple (single-byte, code→glyph) font subtypes the probe handles. */
@@ -150,6 +152,7 @@ export function fixPdfEncoding(
 
   setUserGlyphs(opts?.userGlyphs ?? []);
   const review: ReviewItem[] = [];
+  const skippedFonts: { name: string; glyphs: number }[] = [];
   const reviewSeen: Float64Array[] = [];
   const fixedFonts: string[] = [];
   for (let t = 0; t < targets.length; t++) {
@@ -208,7 +211,7 @@ export function fixPdfEncoding(
     if (target.kind === 'shape' || hebCount < 6) {
       const shaped = shapeDecodeFont(doc, target.objNum, relaxedFor(target.name));
       if (shaped) table = shaped;
-      else if (target.kind === 'shape') continue;
+      else if (target.kind === 'shape') { const pg = probeShapes(doc, target.objNum); skippedFonts.push({ name: target.name, glyphs: pg?.length ?? 0 }); continue; }
     } else {
       shapeFill(doc, target.objNum, table, relaxedFor(target.name));
     }
@@ -238,7 +241,7 @@ export function fixPdfEncoding(
   const bytes = doc
     .saveToBuffer('garbage=2,compress=yes')
     .asUint8Array();
-  return { bytes, fixedFonts, review };
+  return { bytes, fixedFonts, review, skippedFonts };
 }
 
 /**

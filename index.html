@@ -24,10 +24,10 @@
              background: #2563eb; color: #fff; text-decoration: none; font-weight: 600; }
       .muted { opacity: .65; font-size: .85rem; }
       progress { width: 100%; }
-      #review-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; margin: .8rem 0; }
-      .rv { border: 1px solid rgba(127,127,127,.4); border-radius: 8px; padding: .4rem; text-align: center; font-size: .75rem; }
-      .rv canvas { width: 60px; height: 60px; image-rendering: auto; background: #fff; border-radius: 4px; }
-      .rv input { width: 4rem; text-align: center; font-size: 1.1rem; }
+      .rv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .8rem; margin: .8rem 0; }
+      .rv { border: 1px solid rgba(127,127,127,.4); border-radius: 8px; padding: .5rem; text-align: center; font-size: .75rem; }
+      .rv canvas { width: 160px; height: 160px; background: #fff; border-radius: 4px; }
+      .rv input { width: 5rem; text-align: center; font-size: 1.4rem; margin: .3rem 0; }
     </style>
   </head>
   <body>
@@ -65,6 +65,7 @@
         <button id="dict-export" type="button">ייצוא מילון</button>
         <button id="dict-import" type="button">ייבוא מילון</button>
         <button id="dict-reset" type="button">איפוס מילון</button>
+        <button id="dict-share" type="button">שלחו את התיקונים לשיפור הכלי</button>
         <input id="dict-file" type="file" accept="application/json" hidden />
       </div>
     </section>

@@ -1,5 +1,6 @@
 import * as mupdf from 'mupdf';
 import rawModel from './shape-model.json';
+import defaultGlyphs from './default-glyphs.json';
 
 /**
  * Shape-based decoding of Hebrew glyphs. Used only when no name/codepage/
@@ -116,6 +117,14 @@ function classify(f: Float64Array): { letter: string; kmax: number } {
 }
 
 /** Render every byte code of a simple font in isolation and classify its glyph. */
+/** codes assigned by a non-exact classifier match (< EXACT), per font object: shown for confirmation. */
+const GUESSED = new WeakMap<object, Map<number, Set<number>>>();
+function noteGuess(doc: object, obj: number, code: number) {
+  let m = GUESSED.get(doc); if (!m) { m = new Map(); GUESSED.set(doc, m); }
+  let st = m.get(obj); if (!st) { st = new Set(); m.set(obj, st); }
+  st.add(code);
+}
+
 const PROBE_CACHE = new WeakMap<object, Map<number, ShapeGlyph[] | null>>();
 export function probeShapes(doc: mupdf.PDFDocument, fontObjNum: number): ShapeGlyph[] | null {
   let cache = PROBE_CACHE.get(doc);
@@ -208,14 +217,14 @@ export function shapeDecodeFont(doc: mupdf.PDFDocument, fontObjNum: number, rela
   const useKey: 'code' | 'gid' | null = Math.max(sc.support, sg.support) >= 0.6 ? (sc.support >= sg.support ? 'code' : 'gid') : null;
   const d = useKey === 'code' ? sc.d : sg.d;
   const table = new Map<number, string>();
-  for (const x of pool) table.set(x.code, x.letter);
+  for (const x of pool) { table.set(x.code, x.letter); if (x.kmax < EXACT) noteGuess(doc, fontObjNum, x.code); }
   for (const x of g) if (x.kmax >= EXACT && !IS_LETTER.test(x.text)) table.set(x.code, x.text); // nikud, dagesh/vowel composites, digits, punctuation
   if (useKey) {
     // inside the alphabet window every glyph with a plausible letter shape is that letter (even if the
     // classifier was unsure, e.g. a letter with a dagesh)
     for (const x of g) {
       const i = x[useKey] - d;
-      if (x.letterLike && x.kmax >= 0.6 && i >= 0 && i < ALPHA.length) table.set(x.code, ALPHA[i]);
+      if (x.letterLike && x.kmax >= 0.6 && i >= 0 && i < ALPHA.length) { table.set(x.code, ALPHA[i]); if (x.kmax < EXACT) noteGuess(doc, fontObjNum, x.code); }
     }
   }
   return table;
@@ -244,7 +253,7 @@ export function shapeFill(doc: mupdf.PDFDocument, fontObjNum: number, table: Map
     const known3 = known >= 3 || shaped.size >= (relaxed ? 4 : 12);
     if (exact.has(x.code) || x.kmax < 0.75 || !(IS_MARK.test(x.text) || (known3 && (IS_COMPOSITE.test(x.text) || IS_LETTER.test(x.text))))) continue;
     const cur = table.get(x.code);
-    if (!cur || !/[\u0591-\u05ea0-9.,;:!?()\[\]'"\-\u2013\u2014 ]/.test(cur)) { table.set(x.code, x.text); added++; }
+    if (!cur || !/[\u0591-\u05ea0-9.,;:!?()\[\]'"\-\u2013\u2014 ]/.test(cur)) { table.set(x.code, x.text); added++; noteGuess(doc, fontObjNum, x.code); }
   }
   for (const [code, letter] of shaped) {
     if (exact.has(code)) continue;
@@ -274,7 +283,8 @@ function decodeFeatures(b64: string): Float64Array {
   return f;
 }
 export function setUserGlyphs(list: UserGlyph[]): void {
-  USER = list.filter((u) => u.f && u.text !== undefined).map((u) => ({ f: decodeFeatures(u.f), text: u.text }));
+  // community-approved dictionary (src/default-glyphs.json) + this user's own labels (these win)
+  USER = [...(defaultGlyphs as UserGlyph[]), ...list].filter((u) => u.f && u.text !== undefined).map((u) => ({ f: decodeFeatures(u.f), text: u.text }));
 }
 function userMatch(f: Float64Array): string | null {
   let best = 0, text: string | null = null;
@@ -290,25 +300,70 @@ function userMatch(f: Float64Array): string | null {
 // ---------------------------------------------------------------------------------------------------------
 // Review list: glyphs of Hebrew fonts that still map to something that is not Hebrew/digit/punctuation.
 
-export interface ReviewItem { font: string; code: number; current: string; guess: string; kmax: number; f: string; preview: number[] }
+export interface ReviewItem { kind: 'unresolved' | 'guess'; font: string; code: number; current: string; guess: string; kmax: number; f: string; thumb: Uint8Array; thumbSize: number }
 const VALID = /^[\u0591-\u05f4\u200e\u200f0-9.,;:!?()\[\]'"\-\u2013\u2014\u2018-\u201f\u2022 /%*+=<>&\u20aa]+$/;
+
+const THUMB = 160;
+/** Re-render the requested codes of a font as a typographic specimen: 1.6 em square, baseline at 72 %, so marks above/below the letter stay visible. */
+function renderThumbs(doc: mupdf.PDFDocument, fontObjNum: number, codes: number[]): Map<number, Uint8Array> {
+  const out = new Map<number, Uint8Array>();
+  const resources = doc.newDictionary(); const fonts = doc.newDictionary();
+  fonts.put('P', doc.newIndirect(fontObjNum)); resources.put('Font', fonts);
+  const size = CELL * GRID; let content = '';
+  for (let c = 0; c < 256; c++) { const r = Math.floor(c / 16), k = c % 16; content += `BT /P ${FS} Tf 1 0 0 1 ${k * CELL + 8} ${size - (r * CELL + BASE)} Tm <${c.toString(16).padStart(2, '0')}> Tj ET\n`; }
+  const pageObj = doc.addPage([0, 0, size, size], 0, resources, content);
+  doc.insertPage(-1, pageObj);
+  const idx = doc.countPages() - 1; const page = doc.loadPage(idx);
+  try {
+    const pix = page.toPixmap(mupdf.Matrix.scale(SCALE, SCALE), mupdf.ColorSpace.DeviceGray, false);
+    const px = pix.getPixels(), W = pix.getWidth(), stride = pix.getStride(), nc = pix.getNumberOfComponents();
+    const cs = CELL * SCALE, em = FS * SCALE, win = 1.6 * em;
+    for (const c of codes) {
+      const r = Math.floor(c / 16), k = c % 16;
+      // horizontal centre of the ink inside the cell
+      let x0 = cs, x1 = -1;
+      for (let y = 0; y < cs; y++) for (let x = 0; x < cs; x++) { const xx = k * cs + x; if (xx < W && px[(r * cs + y) * stride + xx * nc] < 155) { if (x < x0) x0 = x; if (x > x1) x1 = x; } }
+      const cx = x1 >= 0 ? (x0 + x1) / 2 : cs / 2;
+      const left = cx - win / 2, top = BASE * SCALE - 1.15 * em;
+      const t = new Uint8Array(THUMB * THUMB);
+      for (let ty = 0; ty < THUMB; ty++) for (let tx = 0; tx < THUMB; tx++) {
+        const sx = left + ((tx + 0.5) * win) / THUMB, sy = top + ((ty + 0.5) * win) / THUMB;
+        const ix = Math.floor(sx), iy = Math.floor(sy);
+        let v = 255;
+        if (ix >= 0 && iy >= 0 && ix < cs && iy < cs) { const xx = k * cs + ix; if (xx < W) v = px[(r * cs + iy) * stride + xx * nc]; }
+        t[ty * THUMB + tx] = v;
+      }
+      out.set(c, t);
+    }
+    pix.destroy();
+  } finally { page.destroy(); doc.deletePage(idx); }
+  return out;
+}
 
 export function collectReview(doc: mupdf.PDFDocument, fontObjNum: number, table: Map<number, string>, fontName: string, out: ReviewItem[], seen: Float64Array[]): void {
   const g = probeShapes(doc, fontObjNum);
   if (!g) return;
+  const guessed = GUESSED.get(doc)?.get(fontObjNum);
+  const pick: { x: ShapeGlyph; kind: 'unresolved' | 'guess'; cur: string }[] = [];
   for (const x of g) {
     const cur = table.get(x.code);
+    let kind: 'unresolved' | 'guess' | null = null;
     // no entry at all: the code keeps its original (usually fine) mapping, so it is not a problem to review
-    if (cur === undefined || cur === '' || VALID.test(cur)) continue;
+    if (cur !== undefined && cur !== '' && !VALID.test(cur)) kind = 'unresolved';
+    else if (cur && guessed?.has(x.code) && x.kmax < EXACT) kind = 'guess';
+    if (!kind) continue;
     let dup = false;
     for (const f of seen) {
       let d = 0; for (let i = 0; i < f.length; i++) { const e = f[i] - x.feat[i]; d += e * e; }
       if (Math.exp(-M.gamma * d) >= EXACT) { dup = true; break; }
     }
-    if (dup || out.length >= 80) continue;
+    if (dup || out.length + pick.length >= 120) continue;
     seen.push(x.feat);
-    const preview: number[] = [];
-    for (let i = 0; i < 400; i++) preview.push(Math.round(Math.max(0, Math.min(1, x.feat[i])) * 255));
-    out.push({ font: fontName, code: x.code, current: cur, guess: x.kmax >= 0.5 ? x.text : cur, kmax: x.kmax, f: encodeFeatures(x.feat), preview });
+    pick.push({ x, kind, cur: cur ?? '' });
+  }
+  if (!pick.length) return;
+  const thumbs = renderThumbs(doc, fontObjNum, pick.map((p) => p.x.code));
+  for (const { x, kind, cur } of pick) {
+    out.push({ kind, font: fontName, code: x.code, current: cur, guess: kind === 'guess' ? cur : (x.kmax >= 0.5 ? x.text : cur), kmax: x.kmax, f: encodeFeatures(x.feat), thumb: thumbs.get(x.code)!, thumbSize: THUMB });
   }
 }

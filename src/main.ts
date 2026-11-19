@@ -24,29 +24,52 @@ function saveUserGlyphs(list: UserGlyph[]) {
 }
 
 let currentReview: ReviewItem[] = [];
-function renderReview(items: ReviewItem[]) {
+function renderReview(items: ReviewItem[], skipped: { name: string; glyphs: number }[]) {
   currentReview = items;
   reviewItems.innerHTML = '';
-  reviewBox.hidden = items.length === 0;
-  items.forEach((it, i) => {
-    const card = document.createElement('div');
-    card.className = 'rv';
-    const cv = document.createElement('canvas');
-    cv.width = 20; cv.height = 20;
-    const ctx = cv.getContext('2d')!;
-    const img = ctx.createImageData(20, 20);
-    for (let k = 0; k < 400; k++) {
-      const v = 255 - it.preview[k];
-      img.data[k * 4] = img.data[k * 4 + 1] = img.data[k * 4 + 2] = v; img.data[k * 4 + 3] = 255;
-    }
-    ctx.putImageData(img, 0, 0);
-    const input = document.createElement('input');
-    input.id = `rv-${i}`; input.value = it.guess; input.dir = 'rtl';
-    const label = document.createElement('div');
-    label.textContent = `${displayFontName(it.font)} · 0x${it.code.toString(16)} · כעת: ${JSON.stringify(it.current)}`;
-    card.append(cv, document.createElement('br'), input, label);
-    reviewItems.append(card);
-  });
+  reviewBox.hidden = items.length === 0 && skipped.length === 0;
+  const groups: [string, string, ReviewItem[]][] = [
+    ['לא פוענחו', 'גליפים בפונטים עבריים שעדיין ממופים לתו לא עברי. הקלידו את התו הנכון.', items.filter((i) => i.kind === 'unresolved')],
+    ['ניחושים לוודא', 'הכלי זיהה אותם לפי הצורה אך אינו בטוח לגמרי. אם התו הנוכחי נכון — השאירו; אם לא — תקנו.', items.filter((i) => i.kind === 'guess')],
+  ];
+  for (const [title, hint, list] of groups) {
+    if (!list.length) continue;
+    const h = document.createElement('h3'); h.textContent = `${title} (${list.length})`;
+    const p = document.createElement('p'); p.className = 'muted'; p.textContent = hint;
+    const grid = document.createElement('div'); grid.className = 'rv-grid';
+    list.forEach((it) => {
+      const i = items.indexOf(it);
+      const card = document.createElement('div'); card.className = 'rv';
+      const cv = document.createElement('canvas'); cv.width = it.thumbSize; cv.height = it.thumbSize;
+      const ctx = cv.getContext('2d')!;
+      const img = ctx.createImageData(it.thumbSize, it.thumbSize);
+      for (let k = 0; k < it.thumbSize * it.thumbSize; k++) { const v = it.thumb[k]; img.data[k * 4] = img.data[k * 4 + 1] = img.data[k * 4 + 2] = v; img.data[k * 4 + 3] = 255; }
+      ctx.putImageData(img, 0, 0);
+      const base = Math.round(it.thumbSize * (1.15 / 1.6));   // baseline guide
+      ctx.strokeStyle = 'rgba(220,38,38,.6)'; ctx.beginPath(); ctx.moveTo(0, base); ctx.lineTo(it.thumbSize, base); ctx.stroke();
+      const input = document.createElement('input'); input.id = `rv-${i}`; input.value = it.guess; input.dir = 'rtl';
+      const label = document.createElement('div');
+      label.textContent = `${displayFontName(it.font)} · 0x${it.code.toString(16)}\nכעת: ${JSON.stringify(it.current)} · ביטחון ${Math.round(it.kmax * 100)}%`;
+      label.style.whiteSpace = 'pre-line';
+      card.append(cv, document.createElement('br'), input, label); grid.append(card);
+    });
+    if (title.startsWith('ניחושים')) {
+      const det = document.createElement('details'); const sum = document.createElement('summary'); sum.append(h);
+      const all = document.createElement('button'); all.type = 'button'; all.textContent = 'אשרו את כל הניחושים (הם נכונים)';
+      all.addEventListener('click', () => {
+        const dict = loadUserGlyphs();
+        for (const it of list) dict.push({ f: it.f, text: (document.getElementById(`rv-${items.indexOf(it)}`) as HTMLInputElement).value });
+        saveUserGlyphs(dict); void handleJobs(lastJobs, lastPreferZip);
+      });
+      det.append(sum, p, all, grid); reviewItems.append(det);
+    } else reviewItems.append(h, p, grid);
+  }
+  if (skipped.length) {
+    const h = document.createElement('h3'); h.textContent = `פונטים שלא זוהו כעבריים (${skipped.length})`;
+    const p = document.createElement('p'); p.className = 'muted';
+    p.textContent = 'נבדקו ונדחו כי הצורות שבהם אינן דומות מספיק לאותיות עבריות מוכרות: ' + [...new Set(skipped.map((f) => `${displayFontName(f.name)} (${f.glyphs} גליפים)`))].join(', ') + '. אם אחד מהם עברי — שלחו את הקובץ לבדיקה.';
+    reviewItems.append(h, p);
+  }
 }
 
 document.getElementById('review-save')!.addEventListener('click', () => {
@@ -67,6 +90,13 @@ document.getElementById('dict-import')!.addEventListener('click', () => document
 document.getElementById('dict-file')!.addEventListener('change', async (e) => {
   const f = (e.target as HTMLInputElement).files?.[0]; if (!f) return;
   try { saveUserGlyphs([...loadUserGlyphs(), ...(JSON.parse(await f.text()) as UserGlyph[])]); say('המילון יובא.'); } catch { say('קובץ מילון לא תקין.'); }
+});
+document.getElementById('dict-share')!.addEventListener('click', async () => {
+  const json = JSON.stringify(loadUserGlyphs());
+  const base = 'https://github.com/arye000001-boop/pdf-missing-encoding-fixer-heb/issues/new?template=glyph-corrections.yml';
+  if (json.length < 5500) { window.open(`${base}&json=${encodeURIComponent(json)}`, '_blank'); return; }
+  try { await navigator.clipboard.writeText(json); say('המילון הועתק ללוח. הדביקו אותו בטופס שייפתח.'); } catch { say('הורידו את המילון בכפתור "ייצוא מילון" והדביקו את תוכנו בטופס.'); }
+  window.open(base, '_blank');
 });
 document.getElementById('dict-reset')!.addEventListener('click', () => { saveUserGlyphs([]); say('המילון אופס.'); });
 
@@ -95,6 +125,7 @@ type PdfJob = {
 
 type FixedPdf = {
   review: ReviewItem[];
+  skippedFonts: { name: string; glyphs: number }[];
   outputPath: string;
   bytes: Uint8Array;
   pageCount: number;
@@ -163,7 +194,7 @@ async function fixOnePdf(
 
   // Re-read: mupdf detaches the input buffer it opens, so inspect and fix each
   // take their own copy.
-  const { bytes, fixedFonts, review } = fixPdfEncoding(
+  const { bytes, fixedFonts, review, skippedFonts } = fixPdfEncoding(
     new Uint8Array(await job.file.arrayBuffer()),
     {
       userGlyphs: loadUserGlyphs(),
@@ -182,6 +213,7 @@ async function fixOnePdf(
   bar.value = Math.round(((index + 1) / total) * 100);
   return {
     review,
+    skippedFonts,
     outputPath: outputPath(job.path),
     bytes,
     pageCount: info.pageCount,
@@ -242,7 +274,7 @@ async function handleJobs(jobs: PdfJob[], preferZip = false) {
       );
     }
 
-    renderReview(fixed.flatMap((item) => item.review));
+    renderReview(fixed.flatMap((item) => item.review), fixed.flatMap((item) => item.skippedFonts));
     const fixedFonts = fixed.flatMap((item) => item.fixedFonts);
     const fixedList = compactFontList(fixedFonts, '(אין)');
     const complexFonts = [...new Set(fixed.flatMap((item) =>
