@@ -26,6 +26,9 @@ const SV = (() => {
   return out;
 })();
 const NSV = SV.length / DIM;
+const KC = M.classes.length;
+const DUAL = new Float64Array((KC - 1) * NSV);   // flat copy of the sklearn dual coefficients
+for (let r = 0; r < KC - 1; r++) DUAL.set(M.dual[r], r * NSV);
 const OFF: number[] = [0];
 for (const n of M.nSupport) OFF.push(OFF[OFF.length - 1] + n);
 
@@ -74,30 +77,55 @@ function features(ink: Uint8Array, cs: number, em: number): Float64Array | null 
   return f;
 }
 
-export interface ShapeGlyph { code: number; letter: string; kmax: number; letterLike: boolean; gid: number }
+export interface ShapeGlyph { code: number; letter: string; text: string; kmax: number; letterLike: boolean; gid: number }
+const IS_LETTER = /^[\u05d0-\u05ea]$/;
+/** Similarity at which a glyph is considered an exact dictionary hit (same typeface family seen in training). */
+const EXACT = 0.97;
 
 function classify(f: Float64Array): { letter: string; kmax: number } {
   const k = new Float64Array(NSV);
-  let kmax = 0;
+  let kmax = 0, nearest = 0;
   for (let s = 0; s < NSV; s++) {
     let d = 0; const o = s * DIM;
     for (let i = 0; i < DIM; i++) { const e = SV[o + i] - f[i]; d += e * e; }
-    k[s] = Math.exp(-M.gamma * d); if (k[s] > kmax) kmax = k[s];
+    k[s] = Math.exp(-M.gamma * d); if (k[s] > kmax) { kmax = k[s]; nearest = s; }
   }
-  const K = M.classes.length, votes = new Array(K).fill(0);
+  const K = KC, votes = new Array(K).fill(0);
+  // S[a][b] = sum over support vectors of class a of dual_row(b) * k   (libsvm one-vs-one decision, regrouped)
+  const S = new Float64Array(K * K);
+  for (let a = 0; a < K; a++) {
+    for (let b = 0; b < K; b++) {
+      if (b === a) continue;
+      const row = (b > a ? b - 1 : b) * NSV;
+      let sum = 0;
+      for (let c = OFF[a]; c < OFF[a + 1]; c++) sum += DUAL[row + c] * k[c];
+      S[a * K + b] = sum;
+    }
+  }
   let idx = 0;
   for (let i = 0; i < K; i++) for (let j = i + 1; j < K; j++) {
-    let s = M.intercept[idx++];
-    for (let c = OFF[i]; c < OFF[i + 1]; c++) s += M.dual[j - 1][c] * k[c];
-    for (let c = OFF[j]; c < OFF[j + 1]; c++) s += M.dual[i][c] * k[c];
-    votes[s > 0 ? i : j]++;
+    const sc = M.intercept[idx++] + S[i * K + j] + S[j * K + i];
+    votes[sc > 0 ? i : j]++;
   }
+  // Exact hit (glyph seen in training): the nearest training glyph decides - this keeps dagesh/vowel composites
+  // that the SVM would blur into their plain letter.
+  if (kmax >= EXACT) { let c = 0; while (OFF[c + 1] <= nearest) c++; return { letter: M.classes[c], kmax }; }
   let best = 0; for (let i = 1; i < K; i++) if (votes[i] > votes[best]) best = i;
   return { letter: M.classes[best], kmax };
 }
 
 /** Render every byte code of a simple font in isolation and classify its glyph. */
+const PROBE_CACHE = new WeakMap<object, Map<number, ShapeGlyph[] | null>>();
 export function probeShapes(doc: mupdf.PDFDocument, fontObjNum: number): ShapeGlyph[] | null {
+  let cache = PROBE_CACHE.get(doc);
+  if (!cache) { cache = new Map(); PROBE_CACHE.set(doc, cache); }
+  if (cache.has(fontObjNum)) return cache.get(fontObjNum)!;
+  const res = probeShapesUncached(doc, fontObjNum);
+  cache.set(fontObjNum, res);
+  return res;
+}
+
+function probeShapesUncached(doc: mupdf.PDFDocument, fontObjNum: number): ShapeGlyph[] | null {
   const resources = doc.newDictionary();
   const fonts = doc.newDictionary();
   fonts.put('P', doc.newIndirect(fontObjNum));
@@ -132,7 +160,8 @@ export function probeShapes(doc: mupdf.PDFDocument, fontObjNum: number): ShapeGl
       if (!f) continue;
       const { letter, kmax } = classify(f);
       const hEm = f[403] / 2, wEm = (f[400] / 2) * hEm;
-      out.push({ code: c, letter, kmax, gid: gids.length === 256 ? gids[c] : -1, letterLike: (hEm >= 0.4 && wEm >= 0.18) || kmax >= 0.88 }); // narrow letters (vav, yod, final nun) fail the size test but match very closely
+      const isL = IS_LETTER.test(letter);
+      out.push({ code: c, letter, text: letter, kmax, gid: gids.length === 256 ? gids[c] : -1, letterLike: isL && ((hEm >= 0.4 && wEm >= 0.18) || kmax >= 0.88) }); // narrow letters (vav, yod, final nun) fail the size test but match very closely
     }
     pix.destroy();
   } catch {
@@ -167,6 +196,7 @@ export function shapeDecodeFont(doc: mupdf.PDFDocument, fontObjNum: number): Map
   const d = useKey === 'code' ? sc.d : sg.d;
   const table = new Map<number, string>();
   for (const x of strong) table.set(x.code, x.letter);
+  for (const x of g) if (x.kmax >= EXACT && !IS_LETTER.test(x.text)) table.set(x.code, x.text); // nikud, dagesh/vowel composites, digits, punctuation
   if (useKey) {
     // inside the alphabet window every glyph with a plausible letter shape is that letter (even if the
     // classifier was unsure, e.g. a letter with a dagesh)
@@ -192,7 +222,11 @@ export function shapeFill(doc: mupdf.PDFDocument, fontObjNum: number, table: Map
   const shaped = new Map<number, string>(shapeDecodeFont(doc, fontObjNum) ?? []);
   if (known >= 3) for (const x of g) if (x.letterLike && x.kmax >= 0.7 && !shaped.has(x.code)) shaped.set(x.code, x.letter);
   let added = 0;
+  const exact = new Map<number, string>();
+  if (known >= 3 || shaped.size >= 12) for (const x of g) if (x.kmax >= EXACT) exact.set(x.code, x.text);
+  for (const [code, text] of exact) { if (table.get(code) !== text) { table.set(code, text); added++; } } // exact dictionary hit beats rule-based guesses
   for (const [code, letter] of shaped) {
+    if (exact.has(code)) continue;
     const cur = table.get(code);
     if (cur && /[\u0591-\u05ea0-9.,;:!?()\[\]'"\-\u2013\u2014 ]/.test(cur)) continue; // never overwrite Hebrew letters, nikud/taamim, digits or punctuation
     table.set(code, letter);
