@@ -100,3 +100,17 @@ Pages → "GitHub Actions" in the repo settings once.
   validated entries in `pending/` on branch `community-glyphs`. Maintainer: check that branch out as a folder and run
   `node scripts/merge-glyphs.mjs <folder>/pending` (add `--write` to append non-conflicting entries seen by >= 2 contributors, or `--all`)
   to update `src/default-glyphs.json`, which ships with every build.
+
+## Font coverage
+
+| Font kind | How it is repaired |
+|---|---|
+| Simple fonts (Type1 / TrueType / MMType1) with an embedded program | glyph names, code pages, GID-alphabet rules, then glyph-shape classification (letters, nikud, Latin, digits, punctuation) |
+| Type3 fonts | glyph-shape classification (glyph procedures are rendered on a probe page) |
+| Type0 / CID fonts, TrueType-based (CIDFontType2), Identity-H/V, with or without a broken ToUnicode | glyphs are rendered by glyph id straight from the embedded program, classified by shape, merged with the existing ToUnicode (valid Hebrew entries are never overwritten); empty glyphs with an advance become spaces |
+| CFF-based CID fonts, CIDs mapped by a custom CMap | not supported yet: listed in the page as "גופני CID שאינם נתמכים" |
+| Non-embedded fonts, image-only (scanned) pages | no glyph shapes to read: needs OCR (not part of this tool) |
+
+The shape model (`src/shape-model.json`, ~5 MB) knows 145 classes: Hebrew letters, nikud, Latin letters/digits and punctuation. On typefaces it was
+not trained on, Hebrew letters were recognised with 94-99 % accuracy and Latin/Hebrew confusion was ~1 %; nikud marks only ~67 %, so uncertain
+marks land in the review panel instead of being guessed.

@@ -289,10 +289,10 @@ async function handleJobs(jobs: PdfJob[], preferZip = false) {
     say(
       `הסתיים. ${fixed.length} קבצים, ${pages} עמודים.\\n` +
         `פונטים שתוקנו: ${fixedList}\\n` +
-        `גופני Type0/CID שלא תוקנו: ${complexList}\\n` +
+        `גופני CID שאינם נתמכים עדיין (מבוססי CFF או בקידוד מיוחד): ${complexList}\\n` +
         (complexFonts.length
-          ? 'שים לב: נותרו גופני Type0/CID שלא תוקנו; יש לבדוק אותם בנפרד.'
-          : 'לא זוהו גופני Type0/CID במסמך.'),
+          ? 'שים לב: נותרו גופני CID שאינם נתמכים עדיין; יש לבדוק אותם בנפרד.'
+          : 'כל גופני ה-CID במסמך נתמכים.'),
     );
   } catch (e) {
     say(`שגיאה: ${e instanceof Error ? e.message : String(e)}`);
