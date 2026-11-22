@@ -11,27 +11,39 @@ import defaultGlyphs from './default-glyphs.json';
  *
  * The feature code below mirrors the Python used for training - keep in sync.
  */
-const CELL = 70, FS = 48, BASE = 50, SCALE = 2, GRID = 16, N = 20;
+export const CELL = 70, FS = 48, BASE = 50, SCALE = 2, GRID = 16;
+const N = 20;
 const DIM = 404;
 const ALPHA = 'אבגדהוזחטיךכלםמנןסעףפץצקרשת'; // glyph-order of legacy "alphabet" fonts
 
 interface Model {
-  classes: string[]; gamma: number; nSupport: number[]; sv: string;
-  dual: number[][]; intercept: number[];
+  classes: string[]; gamma: number; nSupport: number[]; sv: string; nSv: number;
+  dualRow: string; dualSv: string; dualVal: string; intercept: string;
 }
 const M = rawModel as unknown as Model;
+function b64bytes(s: string): Uint8Array {
+  const bin = atob(s); const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
 const SV = (() => {
-  const bin = atob(M.sv);
-  const out = new Float64Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = (bin.charCodeAt(i) / 255) * 8 - 2;
+  const u = b64bytes(M.sv); const out = new Float32Array(u.length);
+  for (let i = 0; i < u.length; i++) out[i] = (u[i] / 255) * 8 - 2;
   return out;
 })();
-const NSV = SV.length / DIM;
+const NSV = M.nSv;
 const KC = M.classes.length;
-const DUAL = new Float64Array((KC - 1) * NSV);   // flat copy of the sklearn dual coefficients
-for (let r = 0; r < KC - 1; r++) DUAL.set(M.dual[r], r * NSV);
 const OFF: number[] = [0];
 for (const n of M.nSupport) OFF.push(OFF[OFF.length - 1] + n);
+// sparse (row, sv, value) triples -> flat dense copy of the sklearn dual coefficients
+const DUAL = new Float32Array((KC - 1) * NSV);
+{
+  const rows = b64bytes(M.dualRow);
+  const svs = new Uint16Array(b64bytes(M.dualSv).slice().buffer);
+  const vals = new Float32Array(b64bytes(M.dualVal).slice().buffer);
+  for (let i = 0; i < rows.length; i++) DUAL[rows[i] * NSV + svs[i]] = vals[i];
+}
+const INTERCEPT = new Float32Array(b64bytes(M.intercept).slice().buffer);
 
 function areaMatrix(src: number, dst: number): Float64Array {
   const m = new Float64Array(dst * src);
@@ -53,7 +65,7 @@ const KW = [K1 / KS, 1 / KS, K1 / KS];
 const refl = (i: number, n: number) => (i < 0 ? -i : i >= n ? 2 * n - 2 - i : i);
 
 /** ink: 0..255 (255 = ink) cell image of size cs x cs. Returns DIM features or null if blank. */
-function features(ink: Uint8Array, cs: number, em: number): Float64Array | null {
+export function features(ink: Uint8Array, cs: number, em: number): Float64Array | null {
   let x0 = cs, x1 = -1, y0 = cs, y1 = -1, count = 0;
   for (let y = 0; y < cs; y++) for (let x = 0; x < cs; x++) {
     if (ink[y * cs + x] > 100) { count++; if (x < x0) x0 = x; if (x + 1 > x1) x1 = x + 1; if (y < y0) y0 = y; if (y + 1 > y1) y1 = y + 1; }
@@ -79,12 +91,36 @@ function features(ink: Uint8Array, cs: number, em: number): Float64Array | null 
 }
 
 export interface ShapeGlyph { code: number; letter: string; text: string; kmax: number; letterLike: boolean; gid: number; feat: Float64Array }
-const IS_LETTER = /^[\u05d0-\u05ea]$/;
-const IS_MARK = /^[\u05b0-\u05bd\u05bf\u05c1\u05c2\u05c7]$/;
+export const IS_LETTER = /^[\u05d0-\u05ea]$/;
+/** A real letter (not a mark/dot): tall enough, sitting on the baseline; narrow letters (vav, yod, final nun) need a very close match. */
+export function letterLikeOf(text: string, kmax: number, f: Float64Array): boolean {
+  if (!IS_LETTER.test(text)) return false;
+  const hEm = f[403] / 2, wEm = (f[400] / 2) * hEm, top = f[401] / 3;
+  const minH = text === '\u05d9' ? 0.15 : 0.28;   // yod is short
+  return hEm >= minH && top >= 0.25 && (wEm >= 0.18 || kmax >= 0.88 || (/[\u05d9\u05d5\u05df]/.test(text) && kmax >= 0.7));
+}
+export const IS_LATIN = /^[A-Za-z0-9]$/;
+export const IS_MARK = /^[\u05b0-\u05bd\u05bf\u05c1\u05c2\u05c7]$/;
+export const IS_COMPOSITE = /^[\u05d0-\u05ea][\u05b0-\u05c7]+$/;
 /** Similarity at which a glyph is considered an exact dictionary hit (same typeface family seen in training). */
-const EXACT = 0.97;
+export const EXACT = 0.97;
 
-function classify(f: Float64Array): { letter: string; kmax: number } {
+const CLASS_CACHE = new Map<string, { letter: string; kmax: number }>();
+function featKey(f: Float64Array): string {
+  // identical glyphs from different subsets of the same font render identically: reuse the answer
+  let h1 = 2166136261 | 0, h2 = 5381;
+  for (let i = 0; i < f.length; i++) { const v = Math.round(f[i] * 400); h1 = Math.imul(h1 ^ v, 16777619); h2 = (h2 * 33) ^ v; }
+  return `${h1}:${h2}`;
+}
+export function classify(f: Float64Array): { letter: string; kmax: number } {
+  const key = featKey(f);
+  const hit = CLASS_CACHE.get(key);
+  if (hit) return hit;
+  const r = classifyUncached(f);
+  CLASS_CACHE.set(key, r);
+  return r;
+}
+function classifyUncached(f: Float64Array): { letter: string; kmax: number } {
   const k = new Float64Array(NSV);
   let kmax = 0, nearest = 0;
   for (let s = 0; s < NSV; s++) {
@@ -106,7 +142,7 @@ function classify(f: Float64Array): { letter: string; kmax: number } {
   }
   let idx = 0;
   for (let i = 0; i < K; i++) for (let j = i + 1; j < K; j++) {
-    const sc = M.intercept[idx++] + S[i * K + j] + S[j * K + i];
+    const sc = INTERCEPT[idx++] + S[i * K + j] + S[j * K + i];
     votes[sc > 0 ? i : j]++;
   }
   // Exact hit (glyph seen in training): the nearest training glyph decides - this keeps dagesh/vowel composites
@@ -119,7 +155,8 @@ function classify(f: Float64Array): { letter: string; kmax: number } {
 /** Render every byte code of a simple font in isolation and classify its glyph. */
 /** codes assigned by a non-exact classifier match (< EXACT), per font object: shown for confirmation. */
 const GUESSED = new WeakMap<object, Map<number, Set<number>>>();
-function noteGuess(doc: object, obj: number, code: number) {
+export function guessedCodes(doc: object, obj: number): Set<number> | undefined { return GUESSED.get(doc)?.get(obj); }
+export function noteGuess(doc: object, obj: number, code: number) {
   let m = GUESSED.get(doc); if (!m) { m = new Map(); GUESSED.set(doc, m); }
   let st = m.get(obj); if (!st) { st = new Set(); m.set(obj, st); }
   st.add(code);
@@ -171,8 +208,7 @@ function probeShapesUncached(doc: mupdf.PDFDocument, fontObjNum: number): ShapeG
       const um = userMatch(f);
       const { letter, kmax } = um !== null ? { letter: um, kmax: 1 } : classify(f);
       const hEm = f[403] / 2, wEm = (f[400] / 2) * hEm;
-      const isL = IS_LETTER.test(letter);
-      out.push({ code: c, letter, text: letter, kmax, gid: gids.length === 256 ? gids[c] : -1, feat: f, letterLike: isL && ((hEm >= 0.4 && wEm >= 0.18) || kmax >= 0.88) }); // narrow letters (vav, yod, final nun) fail the size test but match very closely
+      out.push({ code: c, letter, text: letter, kmax, gid: gids.length === 256 ? gids[c] : -1, feat: f, letterLike: letterLikeOf(letter, kmax, f) });
     }
     pix.destroy();
   } catch {
@@ -192,12 +228,21 @@ function probeShapesUncached(doc: mupdf.PDFDocument, fontObjNum: number): ShapeG
  */
 export function shapeDecodeFont(doc: mupdf.PDFDocument, fontObjNum: number, relaxed = false): Map<number, string> | null {
   const g = probeShapes(doc, fontObjNum);
-  if (!g) return null;
+  return g ? decideTable(g, doc, fontObjNum, relaxed) : null;
+}
+
+/** Core decision on an already classified glyph list (code = whatever key the caller uses; gid = glyph id or -1). */
+export function decideTable(g: ShapeGlyph[], doc: object, fontObjNum: number, relaxed = false): Map<number, string> | null {
   const strong = g.filter((x) => x.letterLike && x.kmax >= 0.92);
   // A small subset of a font family already proven Hebrew elsewhere in the file (or with a Hebrew-typeface name)
   // only has to show a few letters.
   const need = relaxed ? 4 : 12;
   const ok = strong.length >= need && new Set(strong.map((x) => x.letter)).size >= need;
+  // Hebrew-class glyphs: many distinct letters and almost no repeats. A Latin font mis-read as Hebrew would pile
+  // dozens of glyphs onto few letters; a Hebrew font (or the Hebrew part of a mixed font) shows each letter about once.
+  const hebCls = g.filter((x) => x.letterLike && x.kmax >= 0.7);
+  const dHeb = new Set(hebCls.map((x) => x.letter)).size;
+  const hebOK = dHeb >= (relaxed ? 5 : 15) && hebCls.length <= 2.2 * dHeb + 2;
   // Legacy fonts keep the alphabet in glyph order (finals before regulars). Several letters landing on one
   // consistent code/gid offset is a structural proof of a Hebrew alphabet font, even for a tiny subset whose
   // glyphs match the trained shapes only loosely.
@@ -210,21 +255,21 @@ export function shapeDecodeFont(doc: mupdf.PDFDocument, fontObjNum: number, rela
   const cand = g.filter((x) => IS_LETTER.test(x.text) && x.kmax >= 0.6);
   const cc = snapOf(cand, 'code'), cg = snapOf(cand, 'gid');
   const structural = cand.length >= 6 && Math.max(cc.support, cg.support) >= 0.8 && Math.max(cc.n, cg.n) >= 6;
-  if (!ok && !structural) return null;
-  const pool = ok ? strong : cand;
+  if (!ok && !hebOK && !structural) return null;
+  const pool = ok || hebOK ? [...new Set([...strong, ...hebCls.filter((x) => x.kmax >= 0.8)])] : cand;
   const snap = (key: 'code' | 'gid') => snapOf(pool, key);
   const sc = snap('code'), sg = snap('gid');
-  const useKey: 'code' | 'gid' | null = Math.max(sc.support, sg.support) >= 0.6 ? (sc.support >= sg.support ? 'code' : 'gid') : null;
+  const useKey: 'code' | 'gid' | null = Math.max(sc.support, sg.support) >= 0.8 && pool.length >= 8 ? (sc.support >= sg.support ? 'code' : 'gid') : null;
   const d = useKey === 'code' ? sc.d : sg.d;
   const table = new Map<number, string>();
   for (const x of pool) { table.set(x.code, x.letter); if (x.kmax < EXACT) noteGuess(doc, fontObjNum, x.code); }
-  for (const x of g) if (x.kmax >= EXACT && !IS_LETTER.test(x.text)) table.set(x.code, x.text); // nikud, dagesh/vowel composites, digits, punctuation
+  for (const x of g) if (x.kmax >= EXACT && !IS_LETTER.test(x.text) && !IS_LATIN.test(x.text)) table.set(x.code, x.text); // nikud, dagesh/vowel composites, punctuation
   if (useKey) {
     // inside the alphabet window every glyph with a plausible letter shape is that letter (even if the
     // classifier was unsure, e.g. a letter with a dagesh)
     for (const x of g) {
       const i = x[useKey] - d;
-      if (x.letterLike && x.kmax >= 0.6 && i >= 0 && i < ALPHA.length) { table.set(x.code, ALPHA[i]); if (x.kmax < EXACT) noteGuess(doc, fontObjNum, x.code); }
+      if (x.letterLike && x.kmax >= 0.6 && i >= 0 && i < ALPHA.length && (IS_LETTER.test(x.text) || x.kmax < 0.6)) { table.set(x.code, ALPHA[i]); if (x.kmax < EXACT) noteGuess(doc, fontObjNum, x.code); }
     }
   }
   return table;
@@ -248,7 +293,6 @@ export function shapeFill(doc: mupdf.PDFDocument, fontObjNum: number, table: Map
   if (known >= 3 || shaped.size >= (relaxed ? 4 : 12)) for (const x of g) if (x.kmax >= EXACT) exact.set(x.code, x.text);
   for (const [code, text] of exact) { if (table.get(code) !== text) { table.set(code, text); added++; } } // exact dictionary hit beats rule-based guesses
   // nikud: small dots/bars are less distinctive, so accept a looser match, but only where the code is garbage
-  const IS_COMPOSITE = /^[\u05d0-\u05ea][\u05b0-\u05c7]+$/;
   for (const x of g) {
     const known3 = known >= 3 || shaped.size >= (relaxed ? 4 : 12);
     if (exact.has(x.code) || x.kmax < 0.75 || !(IS_MARK.test(x.text) || (known3 && (IS_COMPOSITE.test(x.text) || IS_LETTER.test(x.text))))) continue;
@@ -286,7 +330,7 @@ export function setUserGlyphs(list: UserGlyph[]): void {
   // community-approved dictionary (src/default-glyphs.json) + this user's own labels (these win)
   USER = [...(defaultGlyphs as UserGlyph[]), ...list].filter((u) => u.f && u.text !== undefined).map((u) => ({ f: decodeFeatures(u.f), text: u.text }));
 }
-function userMatch(f: Float64Array): string | null {
+export function userMatch(f: Float64Array): string | null {
   let best = 0, text: string | null = null;
   for (const u of USER) {
     if (u.f.length !== f.length) continue;
@@ -303,7 +347,22 @@ function userMatch(f: Float64Array): string | null {
 export interface ReviewItem { kind: 'unresolved' | 'guess'; font: string; code: number; current: string; guess: string; kmax: number; f: string; thumb: Uint8Array; thumbSize: number }
 const VALID = /^[\u0591-\u05f4\u200e\u200f0-9.,;:!?()\[\]'"\-\u2013\u2014\u2018-\u201f\u2022 /%*+=<>&\u20aa]+$/;
 
-const THUMB = 160;
+export const THUMB = 160;
+/** Specimen thumbnail: 1.6 em square, baseline at 72 %, so marks above/below the letter stay visible. gray(x,y) = 0..255 of the cell. */
+export function thumbFromGray(gray: (x: number, y: number) => number, cs: number, em: number): Uint8Array {
+  const win = 1.6 * em;
+  let x0 = cs, x1 = -1;
+  for (let y = 0; y < cs; y++) for (let x = 0; x < cs; x++) if (gray(x, y) < 155) { if (x < x0) x0 = x; if (x > x1) x1 = x; }
+  const cx = x1 >= 0 ? (x0 + x1) / 2 : cs / 2;
+  const left = cx - win / 2, top = BASE * SCALE - 1.15 * em;
+  const t = new Uint8Array(THUMB * THUMB);
+  for (let ty = 0; ty < THUMB; ty++) for (let tx = 0; tx < THUMB; tx++) {
+    const ix = Math.floor(left + ((tx + 0.5) * win) / THUMB), iy = Math.floor(top + ((ty + 0.5) * win) / THUMB);
+    t[ty * THUMB + tx] = ix >= 0 && iy >= 0 && ix < cs && iy < cs ? gray(ix, iy) : 255;
+  }
+  return t;
+}
+
 /** Re-render the requested codes of a font as a typographic specimen: 1.6 em square, baseline at 72 %, so marks above/below the letter stay visible. */
 function renderThumbs(doc: mupdf.PDFDocument, fontObjNum: number, codes: number[]): Map<number, Uint8Array> {
   const out = new Map<number, Uint8Array>();
@@ -317,23 +376,10 @@ function renderThumbs(doc: mupdf.PDFDocument, fontObjNum: number, codes: number[
   try {
     const pix = page.toPixmap(mupdf.Matrix.scale(SCALE, SCALE), mupdf.ColorSpace.DeviceGray, false);
     const px = pix.getPixels(), W = pix.getWidth(), stride = pix.getStride(), nc = pix.getNumberOfComponents();
-    const cs = CELL * SCALE, em = FS * SCALE, win = 1.6 * em;
+    const cs = CELL * SCALE, em = FS * SCALE;
     for (const c of codes) {
       const r = Math.floor(c / 16), k = c % 16;
-      // horizontal centre of the ink inside the cell
-      let x0 = cs, x1 = -1;
-      for (let y = 0; y < cs; y++) for (let x = 0; x < cs; x++) { const xx = k * cs + x; if (xx < W && px[(r * cs + y) * stride + xx * nc] < 155) { if (x < x0) x0 = x; if (x > x1) x1 = x; } }
-      const cx = x1 >= 0 ? (x0 + x1) / 2 : cs / 2;
-      const left = cx - win / 2, top = BASE * SCALE - 1.15 * em;
-      const t = new Uint8Array(THUMB * THUMB);
-      for (let ty = 0; ty < THUMB; ty++) for (let tx = 0; tx < THUMB; tx++) {
-        const sx = left + ((tx + 0.5) * win) / THUMB, sy = top + ((ty + 0.5) * win) / THUMB;
-        const ix = Math.floor(sx), iy = Math.floor(sy);
-        let v = 255;
-        if (ix >= 0 && iy >= 0 && ix < cs && iy < cs) { const xx = k * cs + ix; if (xx < W) v = px[(r * cs + iy) * stride + xx * nc]; }
-        t[ty * THUMB + tx] = v;
-      }
-      out.set(c, t);
+      out.set(c, thumbFromGray((x, y) => { const xx = k * cs + x; return xx < W ? px[(r * cs + y) * stride + xx * nc] : 255; }, cs, em));
     }
     pix.destroy();
   } finally { page.destroy(); doc.deletePage(idx); }
@@ -343,13 +389,17 @@ function renderThumbs(doc: mupdf.PDFDocument, fontObjNum: number, codes: number[
 export function collectReview(doc: mupdf.PDFDocument, fontObjNum: number, table: Map<number, string>, fontName: string, out: ReviewItem[], seen: Float64Array[]): void {
   const g = probeShapes(doc, fontObjNum);
   if (!g) return;
-  const guessed = GUESSED.get(doc)?.get(fontObjNum);
+  reviewFromGlyphs(g, table, GUESSED.get(doc)?.get(fontObjNum), fontName, out, seen, (codes) => renderThumbs(doc, fontObjNum, codes));
+}
+
+/** table: code -> text as finally written; thumbs(codes) renders specimen thumbnails on demand. */
+export function reviewFromGlyphs(g: ShapeGlyph[], table: Map<number, string>, guessed: Set<number> | undefined, fontName: string, out: ReviewItem[], seen: Float64Array[], thumbs: (codes: number[]) => Map<number, Uint8Array>, missingIsUnresolved = false): void {
   const pick: { x: ShapeGlyph; kind: 'unresolved' | 'guess'; cur: string }[] = [];
   for (const x of g) {
     const cur = table.get(x.code);
     let kind: 'unresolved' | 'guess' | null = null;
-    // no entry at all: the code keeps its original (usually fine) mapping, so it is not a problem to review
-    if (cur !== undefined && cur !== '' && !VALID.test(cur)) kind = 'unresolved';
+    if (missingIsUnresolved && (cur === undefined || cur === '') && !(IS_LATIN.test(x.text) && x.kmax >= 0.85)) kind = 'unresolved';
+    else if (cur !== undefined && cur !== '' && !VALID.test(cur) && !(IS_LATIN.test(cur) && x.text === cur && x.kmax >= 0.85)) kind = 'unresolved';
     else if (cur && guessed?.has(x.code) && x.kmax < EXACT) kind = 'guess';
     if (!kind) continue;
     let dup = false;
@@ -362,8 +412,7 @@ export function collectReview(doc: mupdf.PDFDocument, fontObjNum: number, table:
     pick.push({ x, kind, cur: cur ?? '' });
   }
   if (!pick.length) return;
-  const thumbs = renderThumbs(doc, fontObjNum, pick.map((p) => p.x.code));
-  for (const { x, kind, cur } of pick) {
-    out.push({ kind, font: fontName, code: x.code, current: cur, guess: kind === 'guess' ? cur : (x.kmax >= 0.5 ? x.text : cur), kmax: x.kmax, f: encodeFeatures(x.feat), thumb: thumbs.get(x.code)!, thumbSize: THUMB });
-  }
+  const th = thumbs(pick.map((p) => p.x.code));
+  for (const { x, kind, cur } of pick)
+    out.push({ kind, font: fontName, code: x.code, current: cur, guess: kind === 'guess' ? cur : (x.kmax >= 0.5 ? x.text : cur), kmax: x.kmax, f: encodeFeatures(x.feat), thumb: th.get(x.code)!, thumbSize: THUMB });
 }

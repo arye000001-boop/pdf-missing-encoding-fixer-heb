@@ -4,6 +4,7 @@ import { buildHebrewNameCodeMap, buildTagFontDecoders, decodeCp1255Glyph } from 
 import { identityEncodingCMap, parseEncodingCMap } from './cmap';
 import { shapeDecodeFont, shapeFill, probeShapes, setUserGlyphs, collectReview, type UserGlyph, type ReviewItem } from './shape-decode';
 export type { UserGlyph, ReviewItem } from './shape-decode';
+import { cidShapeRepair, openCidFont } from './cid-shape';
 import { buildType0HebrewMap, buildVariableToUnicodeCMap, parseCidToGidMap } from './cid-map';
 
 export interface EncodingFixProgress {
@@ -65,7 +66,8 @@ export function fixPdfEncoding(
     | { objNum: number; name: string; kind: 'lost'; alpha: number }
     | { objNum: number; name: string; kind: 'cp1255' }
     | { objNum: number; name: string; kind: 'shape' }
-    | { objNum: number; name: string; kind: 'type0'; table: Map<string, string> };
+    | { objNum: number; name: string; kind: 'type0'; table: Map<string, string> }
+    | { objNum: number; name: string; kind: 'cidshape' };
   const targets: Target[] = [];
   const objCount = doc.countObjects();
   for (let i = 1; i < objCount; i++) {
@@ -89,10 +91,13 @@ export function fixPdfEncoding(
       // Preserve existing maps until all supported ToUnicode operators can
       // be merged without dropping source mappings.
       const existingToUnicode = o.get('ToUnicode');
-      if (existingToUnicode && !existingToUnicode.isNull()) continue;
       const fontKey = normalizeFontName(name);
       const alpha = alphaByName.get(fontKey);
-      if (alpha === undefined) continue;
+      if ((existingToUnicode && !existingToUnicode.isNull()) || alpha === undefined) {
+        // known-alphabet rules do not apply: decide by glyph shape (TrueType-based Identity-H CID fonts)
+        if (!LATIN_FONT.test(name) && openCidFont(doc, o)) targets.push({ objNum: i, name, kind: 'cidshape' });
+        continue;
+      }
       try {
         const encodingObj = o.get('Encoding');
         let encoding = encodingObj?.isName()
@@ -137,7 +142,7 @@ export function fixPdfEncoding(
     if (alpha !== undefined) targets.push({ objNum: i, name, kind: 'lost', alpha });
     else if (decoders.cp1255.has(fontKey))
       targets.push({ objNum: i, name, kind: 'cp1255' });
-    else if (hasEmbeddedProgram(o) && !LATIN_FONT.test(name))
+    else if ((hasEmbeddedProgram(o) || (o.get('Subtype')?.isName() && o.get('Subtype').asName() === 'Type3')) && !LATIN_FONT.test(name))
       targets.push({ objNum: i, name, kind: 'shape' });
   }
 
@@ -145,7 +150,7 @@ export function fixPdfEncoding(
   const hebrewFamilies = new Set<string>();
   for (const tg of targets) {
     if (tg.kind === 'shape' && shapeDecodeFont(doc, tg.objNum)) hebrewFamilies.add(normalizeFontName(tg.name));
-    else if (tg.kind !== 'shape' && tg.kind !== 'type0') hebrewFamilies.add(normalizeFontName(tg.name));
+    else if (tg.kind !== 'shape' && tg.kind !== 'type0' && tg.kind !== 'cidshape') hebrewFamilies.add(normalizeFontName(tg.name));
   }
   const HEB_NAME = /(adv|pft|miryam|narkis|frank|david|vilna|rashi|hadas|keter|nachlieli|guttman|taamey|ezra|sbl|culmus|drugulin|stam)/i;
   const relaxedFor = (name: string) => hebrewFamilies.has(normalizeFontName(name)) || HEB_NAME.test(name);
@@ -178,6 +183,15 @@ export function fixPdfEncoding(
       const stream = doc.addStream(cmap, doc.newDictionary());
       doc.newIndirect(target.objNum).put('ToUnicode', stream);
       if (!fixedFonts.includes(target.name)) fixedFonts.push(target.name);
+      continue;
+    }
+    if (target.kind === 'cidshape') {
+      const r = cidShapeRepair(doc, target.objNum, target.name, relaxedFor(target.name), review, reviewSeen);
+      if (r && r.changed) {
+        const stream = doc.addStream(buildVariableToUnicodeCMap(r.table), doc.newDictionary());
+        doc.newIndirect(target.objNum).put('ToUnicode', stream);
+        if (!fixedFonts.includes(target.name)) fixedFonts.push(target.name);
+      } else if (!r) skippedFonts.push({ name: target.name, glyphs: 0 });
       continue;
     }
     if (target.kind === 'type0') {
@@ -417,7 +431,8 @@ export function inspectPdfEncoding(srcBytes: Uint8Array): {
     const subtype = obj.get('Subtype');
     if (
       type?.isName() && type.asName() === 'Font' &&
-      subtype?.isName() && subtype.asName() === 'Type0'
+      subtype?.isName() && subtype.asName() === 'Type0' &&
+      !openCidFont(doc, obj)          // TrueType-based Identity-H CID fonts are repaired by shape; only the rest is unsupported
     ) {
       const baseFont = obj.get('BaseFont');
       if (baseFont?.isName()) {
