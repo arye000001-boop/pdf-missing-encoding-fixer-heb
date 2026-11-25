@@ -188,14 +188,21 @@ export function fixPdfEncoding(
     if (target.kind === 'cidshape') {
       const r = cidShapeRepair(doc, target.objNum, target.name, relaxedFor(target.name), review, reviewSeen);
       if (r && r.changed) {
-        const stream = doc.addStream(buildVariableToUnicodeCMap(r.table), doc.newDictionary());
+        const stream = doc.addStream(buildVariableToUnicodeCMap(mirrorTable(r.table, opts?.bracketMode)), doc.newDictionary());
         doc.newIndirect(target.objNum).put('ToUnicode', stream);
         if (!fixedFonts.includes(target.name)) fixedFonts.push(target.name);
       } else if (!r) skippedFonts.push({ name: target.name, glyphs: 0 });
       continue;
     }
     if (target.kind === 'type0') {
-      const cmap = buildVariableToUnicodeCMap(target.table);
+      // The alphabet rule only knows the 27 letters. Spaces, punctuation (brackets!), digits and nikud of the same
+      // font are completed by the glyph-shape pass, which starts from the alphabet table.
+      let tbl = target.table;
+      try {
+        const r = cidShapeRepair(doc, target.objNum, target.name, relaxedFor(target.name), review, reviewSeen, target.table);
+        if (r) tbl = r.table;
+      } catch { /* keep the alphabet table */ }
+      const cmap = buildVariableToUnicodeCMap(mirrorTable(tbl, opts?.bracketMode));
       const stream = doc.addStream(cmap, doc.newDictionary());
       doc.newIndirect(target.objNum).put('ToUnicode', stream);
       if (!fixedFonts.includes(target.name)) fixedFonts.push(target.name);
@@ -266,6 +273,15 @@ export function fixPdfEncoding(
  * or a Type3 CharProc throws), then removes the probe page so the document is
  * unchanged.
  */
+/** 'raw' viewers (pdf.js, poppler, MuPDF) need the logical (mirrored) bracket; PDFium (chrome mode) wants the glyph shape. */
+function mirrorTable(t: Map<string, string>, mode: BracketMode | undefined): Map<string, string> {
+  if (mode !== 'raw') return t;
+  const pairs: Record<string, string> = { '(': ')', ')': '(', '[': ']', ']': '[' };
+  const out = new Map<string, string>();
+  for (const [k, v] of t) out.set(k, pairs[v] ?? v);
+  return out;
+}
+
 const LATIN_FONT = /(times|arial|helvet|courier|calibri|cambria|symbol|zapf|wingding|verdana|tahoma|georgia|palatino|garamond|century|consolas|segoe|lucida|trebuchet|comic|impact|dingbat|math)/i;
 
 /** True if the font dictionary points at an embedded font program. */
