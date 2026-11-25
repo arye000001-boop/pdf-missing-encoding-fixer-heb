@@ -146,6 +146,7 @@ export interface CidResult {
 
 export function cidShapeRepair(
   doc: mupdf.PDFDocument, fontObjNum: number, name: string, relaxed: boolean, review: ReviewItem[], seen: Float64Array[],
+  base?: Map<string, string>,   // entries already decided by an earlier rule (e.g. the alphabet rule); the shape pass completes them
 ): CidResult | null {
   const fontObj = doc.newIndirect(fontObjNum).resolve();
   const info = openCidFont(doc, fontObj);
@@ -169,6 +170,7 @@ export function cidShapeRepair(
   const shaped = decideTable(g, doc, fontObjNum, relaxed);   // gid -> text (null = not a Hebrew font)
   if (!shaped) return null;
   const existing = readToUnicode2(fontObj);
+  if (base) for (const [k, v] of base) { const code = Number(k.split(':')[1]); if (Number.isFinite(code)) existing.set(code, v); }
   const KEEP = /^[\u0591-\u05f4\u200e\u200f0-9.,;:!?()\[\]'"\-\u2013\u2014\u2018-\u201f\u2022 /%*+=<>&\u20aa]+$/;
   const final = new Map<string, string>();
   for (const [cid, text] of existing) final.set(encodingCodeKey(cid, 2), text);
@@ -186,6 +188,8 @@ export function cidShapeRepair(
         // Hebrew/mark decisions fill missing entries and replace garbage (incl. wrong Latin), never valid Hebrew/digits/punctuation
         if (cur === undefined || cur === '' || !KEEP.test(cur)) next = hebText;
       } else if (IS_LATIN.test(x.text) && x.kmax >= 0.9 && (cur === undefined || cur === '')) next = x.text;  // English glyph with no mapping
+      else if (/^[.,:;!?()\[\]'"\-\/%\u05be\u05c3\u05f3\u05f4\u2013\u2014]$/.test(x.text) && x.kmax >= 0.8 && (cur === undefined || cur === '' || !KEEP.test(cur))) next = x.text; // punctuation / brackets in a proven Hebrew font
+      else if (/^[0-9]$/.test(x.text) && x.kmax >= 0.85 && (cur === undefined || cur === '' || !KEEP.test(cur))) next = x.text;
       if (next !== undefined && next !== cur) { final.set(encodingCodeKey(cid, 2), next); changed = true; byCode.set(x.code, next); }
       else if (cur !== undefined) byCode.set(x.code, cur);
     }
